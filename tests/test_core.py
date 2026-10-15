@@ -70,7 +70,7 @@ def test_default_condition_is_english_json_with_closing_line():
 def test_text_format_is_a_plain_multiple_choice_question():
     assert direct_messages(dict(ROW, prompt_format="text"))[1]["content"] == (
         "<information>\nowned evidence\n</information>\n\n"
-        "Question: Which answer follows?\n\n"
+        "Criterion: Which answer follows?\n\n"
         "Options:\nA. Yes.\nB. No.\n\n"
         "Answer with the letter of the best option."
     )

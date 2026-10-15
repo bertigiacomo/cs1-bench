@@ -179,14 +179,14 @@ Three optional fields on a row change how the prompt looks. They're experiment s
 | `prompt_format` | `json` (default), `text` | `json` packs everything in one JSON object, like SemIf. `text` is a plain multiple-choice question |
 | `system_role` | `native` (default), `merge` | `merge` glues the system prompt onto the user message, for models whose chat template has no system role |
 
-This is the `text` format in English (the Italian one uses `<elementi>`, `Domanda`, `Opzioni`):
+This is the `text` format in English (the Italian one uses `<elementi>`, `Criterio`, `Opzioni`):
 
 ```text
 <information>
 Customer asks to reset a forgotten password.
 </information>
 
-Question: Which queue should handle this request?
+Criterion: Which queue should handle this request?
 
 Options:
 A. Account access and authentication support.

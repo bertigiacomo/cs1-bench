@@ -24,7 +24,7 @@ PROMPTS = {
         ),
         "evidence": "information", "criterion": "criterion", "options": "options",
         "letter": "letter", "description": "description",
-        "question_label": "Question", "options_label": "Options",
+        "criterion_label": "Criterion", "options_label": "Options",
         "closing": "Answer with the letter of the best option.",
     },
     "it": {
@@ -34,7 +34,7 @@ PROMPTS = {
         ),
         "evidence": "elementi", "criterion": "criterio", "options": "opzioni",
         "letter": "lettera", "description": "descrizione",
-        "question_label": "Domanda", "options_label": "Opzioni",
+        "criterion_label": "Criterio", "options_label": "Opzioni",
         "closing": "Rispondi con la lettera dell'opzione migliore.",
     },
 }
@@ -113,7 +113,7 @@ def _user_content(row: dict, condition: dict, text: dict) -> str:
         choices = "\n".join(f"{LETTERS[index]}. {description}" for index, description in enumerate(descriptions))
         body = (
             _evidence_block(row["state"], "text", text)
-            + f"\n\n{text['question_label']}: {row['question']}\n\n{text['options_label']}:\n{choices}"
+            + f"\n\n{text['criterion_label']}: {row['question']}\n\n{text['options_label']}:\n{choices}"
         )
     return body + "\n\n" + text["closing"]
 
