@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "semif-phase1"
+name = "cs1-bench"
 version = "0.1.0"
-description = "Open baselines for runtime-defined semantic decisions"
+description = "Classification System One Benchmark: LLMs on typed, Jev-style semantic decisions"
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
@@ -22,18 +22,14 @@ dependencies = [
 ]
 
 [project.scripts]
-semif-score = "semif_phase1.cli:main"
+cs1-score = "cs1_bench.cli:main"
 
 [project.optional-dependencies]
 test = ["pytest==8.4.2"]
-mlx = [
-  "mlx==0.32.2; sys_platform == 'darwin' and platform_machine == 'arm64'",
-  "mlx-lm @ git+https://github.com/ml-explore/mlx-lm.git@a63e24c389382619eb6d9af656e3b46024be217a ; sys_platform == 'darwin' and platform_machine == 'arm64'",
-]
 llamacpp = ["llama-cpp-python==0.3.35"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "webgpu-demo"]
+testpaths = ["tests"]
