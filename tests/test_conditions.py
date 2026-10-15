@@ -69,3 +69,10 @@ def test_cli_writes_variants_and_rejects_bad_lists(tmp_path, monkeypatch, capsys
         conditions.main()
     assert error.value.code == 2
     assert "comma-separated subset" in capsys.readouterr().err
+
+
+def test_reverse_adds_only_the_reversed_order():
+    original, reversed_ = conditions.expand(DECISION, rotations="reverse")
+    assert [option["id"] for option in reversed_["options"]] == ["sales", "billing", "account"]
+    assert (original["rotation"], reversed_["rotation"]) == (0, "reverse")
+    assert reversed_["id"] == "d1#en.json.native.rev" and reversed_["answer"] == "account"

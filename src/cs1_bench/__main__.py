@@ -9,6 +9,7 @@ import sys
 COMMANDS = {
     "import": ("data", "Convert CSV, JSON or JSONL into canonical decisions"),
     "variants": ("conditions", "Expand decisions into prompt conditions and option rotations"),
+    "check": ("check", "Preflight: environment and each model's loader, tokenizer, prompts (no weights)"),
     "run": ("runner", "Score variants with one model; write predictions and a manifest"),
     "score": ("cli", "SemIf's single-file scorer, without a manifest"),
 }

@@ -155,7 +155,7 @@ def run(rows: list[dict], output_dir: Path, args: argparse.Namespace, input_path
         "command": sys.argv,
         "mode": args.mode,
         "backend": args.backend,
-        "model": {"source": args.model, "revision": args.revision},
+        "model": {"source": args.model, "revision": args.revision, "revision_source": args.revision_source},
         "input": {"path": str(input_path), "sha256": hashlib.sha256(input_path.read_bytes()).hexdigest(),
                   "rows": len(rows)},
         "warmup_repeats": args.warmup,
@@ -167,7 +167,7 @@ def run(rows: list[dict], output_dir: Path, args: argparse.Namespace, input_path
     try:
         progress.say(f"loading {args.model} ({args.backend}, {args.mode})")
         model, tokenizer, metadata, scorers = load_backend(args)
-        manifest["model"] = metadata
+        manifest["model"] = {**metadata, "revision_source": args.revision_source}
         manifest["load_seconds"] = time.perf_counter() - started
         progress.say(f"loaded in {manifest['load_seconds']:.1f}s on {metadata.get('device', args.backend)}")
         if args.mode != "reranker":

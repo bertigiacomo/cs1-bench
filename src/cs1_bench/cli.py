@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from .core import load_causal_model, validate_row
+from .core import load_causal_model, resolve_model_source, resolve_revision, validate_row
 from .direct import score as direct_score
 from .reranker import score as reranker_score
 from .serial import SerialPrefixScorer
@@ -23,8 +23,10 @@ def add_model_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--gguf", type=Path, help="Local GGUF checkpoint for --backend llamacpp")
     parser.add_argument("--llama-threads", type=int,
                         help="CPU threads for --backend llamacpp (default: all visible cores)")
-    parser.add_argument("--model", required=True)
-    parser.add_argument("--revision", required=True)
+    parser.add_argument("--model", required=True,
+                        help="Hugging Face ID, local folder, or folder name under $CS1_MODELS_DIR")
+    parser.add_argument("--revision",
+                        help="Commit hash; optional for local folders (read from hf download metadata or REVISION)")
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"), default="auto",
                         help="Torch device (auto prefers CUDA, then Apple MPS; CPU must be explicit)")
@@ -33,7 +35,12 @@ def add_model_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def check_model_arguments(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
-    """Reject invalid backend combinations before any model or input is loaded."""
+    """Resolve the model and its revision, and reject invalid combinations before anything is loaded."""
+    args.model = resolve_model_source(args.model)
+    try:
+        args.revision, args.revision_source = resolve_revision(args.model, args.revision)
+    except ValueError as error:
+        parser.error(str(error))
     if args.max_tokens < 1:
         parser.error("max-tokens must be positive")
     if args.gguf is not None and args.backend != "llamacpp":

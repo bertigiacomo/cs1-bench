@@ -10,7 +10,8 @@ from pathlib import Path
 from .core import PROMPT_FORMATS, PROMPTS, SYSTEM_ROLES, validate_row
 from .data import validate_decision
 
-ROTATIONS = ("none", "cyclic")
+# none: original order only; cyclic: one shift per option; reverse: original plus reversed (2 passes).
+ROTATIONS = ("none", "cyclic", "reverse")
 # Fields a variant adds on top of its source decision; the runner copies them into every result.
 VARIANT_FIELDS = ("base_id", "rotation", "prompt_lang", "prompt_format", "system_role")
 
@@ -25,15 +26,21 @@ def expand(decision: dict, langs=("en",), formats=("json",), roles=("native",), 
     validate_decision(decision)
     if rotations not in ROTATIONS:
         raise ValueError(f"rotations must be one of {list(ROTATIONS)}")
-    shifts = range(len(decision["options"])) if rotations == "cyclic" else (0,)
+    options = decision["options"]
+    if rotations == "cyclic":
+        orders = [(shift, f"r{shift}", rotate(options, shift)) for shift in range(len(options))]
+    else:
+        orders = [(0, "r0", options)]
+        if rotations == "reverse":
+            orders.append(("reverse", "rev", options[::-1]))
     variants = []
-    for lang, prompt_format, role, shift in itertools.product(langs, formats, roles, shifts):
+    for lang, prompt_format, role, (rotation, suffix, ordered) in itertools.product(langs, formats, roles, orders):
         variant = {
             **decision,
-            "id": f"{decision['id']}#{lang}.{prompt_format}.{role}.r{shift}",
-            "options": rotate(decision["options"], shift),
+            "id": f"{decision['id']}#{lang}.{prompt_format}.{role}.{suffix}",
+            "options": ordered,
             "base_id": decision["id"],
-            "rotation": shift,
+            "rotation": rotation,
             "prompt_lang": lang,
             "prompt_format": prompt_format,
             "system_role": role,
@@ -83,7 +90,8 @@ def main() -> None:
     parser.add_argument("--roles", type=lambda value: _choices(value, SYSTEM_ROLES), default=("native",),
                         help="System-role handling, e.g. native,merge (default: native)")
     parser.add_argument("--rotations", choices=ROTATIONS, default="none",
-                        help="cyclic: one variant per option position (default: none)")
+                        help="cyclic: one variant per option position; reverse: original plus reversed order "
+                             "(default: none)")
     args = parser.parse_args()
     if args.output.exists():
         parser.error("Output must be new")

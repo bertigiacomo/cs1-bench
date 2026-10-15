@@ -5,9 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 from pathlib import Path
 
+COMMIT = re.compile(r"[0-9a-f]{40}")
+# Multimodal checkpoints whose text model load_causal_model extracts and loads on its own.
+TEXT_EXTRACTED_MODEL_TYPES = {"qwen3_5", "qwen3_5_text"}
 LETTERS = "ABCDEFGHIJKLMNOP"
 # Natural, parallel wording per language; option letters stay A-P in every language.
 # "evidence" names the JSON key and the text-format tag; "closing" ends both formats,
@@ -188,13 +192,56 @@ def synchronize(device) -> None:
         torch.mps.synchronize()
 
 
+def resolve_model_source(model: str) -> str:
+    """Turn a bare model name into a folder under CS1_MODELS_DIR when one exists; otherwise keep it."""
+    path = Path(model).expanduser()
+    if path.exists():
+        return str(path)
+    root = os.environ.get("CS1_MODELS_DIR")
+    candidate = Path(root).expanduser() / model if root else None
+    return str(candidate) if candidate is not None and candidate.exists() else model
+
+
+def local_revision(folder: Path) -> tuple[str, str] | None:
+    """Read the commit a local model was downloaded at: hf download metadata first, then a REVISION file."""
+    commits = set()
+    for metadata in (folder / ".cache" / "huggingface" / "download").rglob("*.metadata"):
+        lines = metadata.read_text(encoding="utf-8").splitlines()
+        if lines:
+            commits.add(lines[0].strip())  # Line 1 is the commit hash; line 2 is the file's etag.
+    if len(commits) > 1:
+        raise ValueError(f"{folder}: download metadata disagree on the revision: {sorted(commits)}")
+    if commits:
+        commit, origin = commits.pop(), "hf-download-metadata"
+    elif (folder / "REVISION").is_file():
+        commit, origin = (folder / "REVISION").read_text(encoding="utf-8").strip(), "revision-file"
+    else:
+        return None
+    if not COMMIT.fullmatch(commit):
+        raise ValueError(f"{folder}: revision {commit!r} from {origin} is not a 40-character commit hash")
+    return commit, origin
+
+
+def resolve_revision(source: str, revision: str | None) -> tuple[str, str]:
+    """Return the revision to record and where it came from: argument, download metadata, or REVISION file."""
+    if revision:
+        return revision, "argument"
+    if Path(source).is_dir():
+        found = local_revision(Path(source))
+        if found is None:
+            raise ValueError(f"No revision found in {source}: pass --revision, or write the commit hash "
+                             "into a REVISION file inside the model folder")
+        return found
+    raise ValueError("Remote models require --revision with a pinned 40-character commit hash")
+
+
 def load_causal_model(source: str, revision: str, device: str = "auto", dtype: str = "bfloat16"):
     """Load one pinned causal model on the resolved Torch device."""
     import torch
     import transformers
 
     local = Path(source).exists()
-    if not local and not re.fullmatch(r"[0-9a-f]{40}", revision or ""):
+    if not local and not COMMIT.fullmatch(revision or ""):
         raise ValueError("Remote models require a pinned 40-character commit revision")
     if local and not revision:
         raise ValueError("Local models require an explicit manifest/revision string")
@@ -205,7 +252,7 @@ def load_causal_model(source: str, revision: str, device: str = "auto", dtype: s
     config = transformers.AutoConfig.from_pretrained(source, **common)
     tokenizer = transformers.AutoTokenizer.from_pretrained(source, **common)
     cls = transformers.AutoModelForCausalLM
-    if config.model_type in {"qwen3_5", "qwen3_5_text"}:
+    if config.model_type in TEXT_EXTRACTED_MODEL_TYPES:
         cls = getattr(transformers, "Qwen3_5ForCausalLM", None)
         if cls is None:
             raise RuntimeError("Installed transformers lacks the native Qwen3.5 model")

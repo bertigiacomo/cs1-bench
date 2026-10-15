@@ -56,8 +56,8 @@ def backend(monkeypatch):
 
 def make_args(mode="direct", warmup=0):
     return argparse.Namespace(mode=mode, backend="torch", model="fake", revision="a" * 40, max_tokens=128,
-                              warmup=warmup, progress_every=0, device="cpu", dtype="float32", gguf=None,
-                              llama_threads=None)
+                              warmup=warmup, progress_every=0, revision_source="argument", device="cpu",
+                              dtype="float32", gguf=None, llama_threads=None)
 
 
 def write_rows(tmp_path, rows):
