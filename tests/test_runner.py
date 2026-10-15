@@ -56,7 +56,8 @@ def backend(monkeypatch):
 
 def make_args(mode="direct", warmup=0):
     return argparse.Namespace(mode=mode, backend="torch", model="fake", revision="a" * 40, max_tokens=128,
-                              warmup=warmup, device="cpu", dtype="float32", gguf=None, llama_threads=None)
+                              warmup=warmup, progress_every=0, device="cpu", dtype="float32", gguf=None,
+                              llama_threads=None)
 
 
 def write_rows(tmp_path, rows):
@@ -158,3 +159,23 @@ def test_cli_refuses_an_existing_output_directory(tmp_path, monkeypatch, capsys)
         runner.main()
     assert error.value.code == 2
     assert "Output directory must be new" in capsys.readouterr().err
+
+
+def test_progress_prints_one_line_per_interval_with_rate_and_eta():
+    now = [0.0]
+    lines = []
+    progress = runner.Progress("Qwen3.5-4B", total=100, every=10, clock=lambda: now[0],
+                               stream=SimpleNamespace(write=lines.append, flush=lambda: None))
+    now[0] = 5
+    progress.advance([{}] * 10)
+    assert lines == []  # Interval not reached yet.
+    now[0] = 10
+    progress.advance([{}] * 9 + [{"error": "x"}])
+    assert lines[0] == "[Qwen3.5-4B] 20/100 (20%) · 2.0 rows/s · ETA 0:00:40 · errors 1"
+
+
+def test_run_reports_progress_on_stderr(tmp_path, backend, capsys):
+    rows = [DECISION]
+    runner.run(rows, tmp_path / "out", make_args(), write_rows(tmp_path, rows))
+    err = capsys.readouterr().err
+    assert "[fake] loading fake" in err and "1/1 (100%)" in err and "done in" in err

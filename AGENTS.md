@@ -4,7 +4,7 @@ CS1-Bench is a bachelor's thesis project. The maintainer is learning by building
 
 ## Environment
 
-- Run commands from the repository root in an isolated environment installed with `pip install -e '.[test]'` (add `llamacpp` to the extras for the GGUF backend).
+- Run commands from the repository root in an isolated environment installed with `pip install -e '.[torch,test]'` (add `llamacpp` to the extras for the GGUF backend). On the DGX Spark, omit `torch`: the environment has a preinstalled CUDA 13 build that must not be replaced.
 - Benchmark runs target an NVIDIA DGX Spark (aarch64, one Blackwell GPU, 128 GB unified memory). Development and small checks happen on macOS (Torch MPS or llama.cpp Metal).
 - Validate changes with `pytest -q`. Tests must not download models or require a GPU; mock the model where needed.
 

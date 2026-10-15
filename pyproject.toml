@@ -9,8 +9,9 @@ description = "Classification System One Benchmark: LLMs on typed, Jev-style sem
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
+# Torch is platform-specific (CUDA 13 on the DGX Spark, MPS on macOS), so it lives in the
+# "torch" extra: preinstalled builds stay untouched, and every run manifest records the exact version.
 dependencies = [
-  "torch==2.10.0",
   "transformers==5.17.0",
   "accelerate==1.12.0",
   "safetensors==0.8.0",
@@ -22,12 +23,10 @@ dependencies = [
 ]
 
 [project.scripts]
-cs1-score = "cs1_bench.cli:main"
-cs1-import = "cs1_bench.data:main"
-cs1-variants = "cs1_bench.conditions:main"
-cs1-run = "cs1_bench.runner:main"
+cs1 = "cs1_bench.__main__:main"
 
 [project.optional-dependencies]
+torch = ["torch==2.10.0"]
 test = ["pytest==8.4.2"]
 llamacpp = ["llama-cpp-python==0.3.35"]
 

@@ -49,9 +49,42 @@ def _environment() -> dict:
     except ImportError:
         return environment
     environment["torch"] = torch.__version__
+    environment["torch_cuda"] = torch.version.cuda
     if torch.cuda.is_available():
-        environment["gpu"] = torch.cuda.get_device_name(0)
+        properties = torch.cuda.get_device_properties(0)
+        environment["gpu"] = properties.name
+        # Recorded because builds may lack official kernels for new architectures (e.g. sm_121).
+        environment["gpu_capability"] = f"{properties.major}.{properties.minor}"
+        environment["gpu_memory_gib"] = round(properties.total_memory / 2**30, 1)
     return environment
+
+
+class Progress:
+    """Print one status line per interval to stderr: readable in tmux and in redirected logs."""
+
+    def __init__(self, label: str, total: int, every: float, clock=time.monotonic, stream=None):
+        self.label, self.total, self.every, self.clock = label, total, every, clock
+        self.stream = sys.stderr if stream is None else stream
+        self.started = self.last = clock()
+        self.done = self.failed = 0
+
+    def say(self, message: str) -> None:
+        print(f"[{self.label}] {message}", file=self.stream, flush=True)
+
+    def advance(self, records: list[dict]) -> None:
+        self.done += len(records)
+        self.failed += sum("error" in record for record in records)
+        now = self.clock()
+        if self.every > 0 and now - self.last >= self.every:
+            self.last = now
+            self.say(self.line(now))
+
+    def line(self, now: float) -> str:
+        elapsed = max(now - self.started, 1e-9)
+        rate = self.done / elapsed
+        remaining = (self.total - self.done) / rate if rate else 0.0
+        return (f"{self.done}/{self.total} ({100 * self.done / self.total:.0f}%) · {rate:.1f} rows/s · "
+                f"ETA {datetime.timedelta(seconds=round(remaining))} · errors {self.failed}")
 
 
 def resolve_system_roles(rows: list[dict], tokenizer) -> tuple[list[dict], bool, int]:
@@ -130,36 +163,47 @@ def run(rows: list[dict], output_dir: Path, args: argparse.Namespace, input_path
         "started_utc": _utc_now(),
     }
     started = time.perf_counter()
+    progress = Progress(Path(args.model).name or args.model, len(rows), args.progress_every)
     try:
+        progress.say(f"loading {args.model} ({args.backend}, {args.mode})")
         model, tokenizer, metadata, scorers = load_backend(args)
         manifest["model"] = metadata
         manifest["load_seconds"] = time.perf_counter() - started
+        progress.say(f"loaded in {manifest['load_seconds']:.1f}s on {metadata.get('device', args.backend)}")
         if args.mode != "reranker":
             rows, supported, fallbacks = resolve_system_roles(rows, tokenizer)
             manifest["system_role_supported"], manifest["system_role_fallbacks"] = supported, fallbacks
+            if not supported:
+                progress.say(f"chat template has no system role: {fallbacks} native rows switched to merge")
         manifest["conditions"] = {
             field: dict(collections.Counter(str(row.get(field, prompt_condition(row).get(field))) for row in rows))
             for field in ("prompt_lang", "prompt_format", "system_role", "rotation")
         }
         units = scoring_units(rows, args.mode)
+        if args.warmup:
+            progress.say(f"warm-up ({args.warmup}x, untimed)")
         _warm_up(units, args.mode, scorers, model, tokenizer, metadata, args.max_tokens, args.warmup)
         serial_scorer = scorers.serial(model, tokenizer, metadata, args.max_tokens) if args.mode == "serial" else None
-        scored = errors = 0
+        progress.say(f"scoring {len(rows)} rows in {len(units)} units")
         scoring_started = time.perf_counter()
+        progress.started = progress.last = progress.clock()
         with (output_dir / "predictions.jsonl").open("x", encoding="utf-8") as destination:
             for unit in units:
-                for record in _score_unit(unit, args.mode, scorers, model, tokenizer, metadata,
-                                          args.max_tokens, serial_scorer):
-                    errors += "error" in record
-                    scored += "error" not in record
+                records = _score_unit(unit, args.mode, scorers, model, tokenizer, metadata,
+                                      args.max_tokens, serial_scorer)
+                for record in records:
                     destination.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n")
                 destination.flush()
+                progress.advance(records)
         manifest["scoring_seconds"] = time.perf_counter() - scoring_started
-        manifest["rows_scored"], manifest["rows_failed"] = scored, errors
+        manifest["rows_scored"], manifest["rows_failed"] = progress.done - progress.failed, progress.failed
         manifest["status"] = "completed"
+        progress.say(progress.line(progress.clock()))
+        progress.say(f"done in {datetime.timedelta(seconds=round(time.perf_counter() - started))} -> {output_dir}")
     except BaseException as error:
         manifest["status"] = "failed"
         manifest["error"] = f"{type(error).__name__}: {error}"
+        progress.say(f"FAILED: {manifest['error']} (manifest written to {output_dir})")
         raise
     finally:
         manifest["finished_utc"] = _utc_now()
@@ -171,15 +215,17 @@ def run(rows: list[dict], output_dir: Path, args: argparse.Namespace, input_path
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("input", type=Path, help="Decisions or variants JSONL (from cs1-import or cs1-variants)")
+    parser.add_argument("input", type=Path, help="Decisions or variants JSONL (from cs1 import or cs1 variants)")
     parser.add_argument("--output", type=Path, required=True, help="New directory for predictions and manifest")
     parser.add_argument("--warmup", type=int, default=1, help="Untimed repeats of the first unit (default: 1)")
+    parser.add_argument("--progress-every", type=float, default=10.0, metavar="SECONDS",
+                        help="Seconds between progress lines on stderr; 0 prints only start and end (default: 10)")
     add_model_arguments(parser)
     args = parser.parse_args()
     if args.output.exists():
         parser.error("Output directory must be new")
-    if args.warmup < 0:
-        parser.error("--warmup must be nonnegative")
+    if args.warmup < 0 or args.progress_every < 0:
+        parser.error("--warmup and --progress-every must be nonnegative")
     check_model_arguments(parser, args)
     rows = [json.loads(line) for line in args.input.read_text(encoding="utf-8").splitlines() if line.strip()]
     if not rows:
@@ -193,6 +239,8 @@ def main() -> None:
         parser.error("Row IDs must be unique")
     manifest = run(rows, args.output, args, args.input)
     print(f"{manifest['rows_scored']} scored, {manifest['rows_failed']} failed -> {args.output}")
+    if manifest["rows_failed"]:
+        print(f"Failed rows carry an 'error' field in {args.output / 'predictions.jsonl'}")
 
 
 if __name__ == "__main__":
