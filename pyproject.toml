@@ -23,6 +23,7 @@ dependencies = [
 
 [project.scripts]
 cs1-score = "cs1_bench.cli:main"
+cs1-import = "cs1_bench.data:main"
 
 [project.optional-dependencies]
 test = ["pytest==8.4.2"]
