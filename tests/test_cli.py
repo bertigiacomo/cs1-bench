@@ -1,53 +1,13 @@
-"""CLI routing tests with mocked backends: no model downloads, GPU, or MLX needed."""
+"""CLI routing tests with mocked backends: no model downloads or GPU needed."""
 
 import json
 import sys
-from types import ModuleType, SimpleNamespace
-from unittest.mock import Mock, call, create_autospec
+from types import SimpleNamespace
+from unittest.mock import Mock, call
 
 import pytest
 
-import cs1_bench
 from cs1_bench import cli
-from cs1_bench.cli import main
-
-
-@pytest.mark.parametrize("extra,message", [
-    (["--backend", "mlx", "--mode", "reranker"], "reranker requires torch"),
-    (["--mode", "direct", "--mlx-bits", "4"], "requires --backend mlx"),
-    (["--mode", "direct", "--mlx-cache-limit-mib", "0"], "requires --backend mlx"),
-    (["--mode", "direct", "--backend", "mlx", "--mlx-cache-limit-mib", "-1"], "must be nonnegative"),
-])
-def test_invalid_backend_combinations_fail_before_loading(tmp_path, monkeypatch, capsys, extra, message):
-    monkeypatch.setattr(sys, "argv", ["cs1-score", "--model", "unused", "--revision", "unused",
-                                    "--input", "missing.jsonl", "--output", str(tmp_path / "out.jsonl"), *extra])
-    with pytest.raises(SystemExit) as error:
-        main()
-    assert error.value.code == 2
-    assert message in capsys.readouterr().err
-    assert not (tmp_path / "out.jsonl").exists()
-
-
-@pytest.mark.parametrize('limit', [None, 0, 512])
-def test_cli_passes_cache_limit_to_loader(tmp_path, monkeypatch, limit):
-    fake_backend = SimpleNamespace(
-        DEFAULT_CACHE_LIMIT_MIB=256,
-        load_model=lambda source, revision, bits, *, cache_limit_mib:
-            (None, None, {'limit': cache_limit_mib}),
-        score=lambda model, tokenizer, row, metadata, max_tokens: metadata,
-        SerialPrefixScorer=None, score_shared=None,
-    )
-    monkeypatch.setattr(cs1_bench, 'mlx_backend', fake_backend, raising=False)
-    source, output = tmp_path / 'input.jsonl', tmp_path / 'output.jsonl'
-    source.write_text(json.dumps({'id': 'test', 'state': 'Evidence', 'question': 'Supported?',
-                                 'options': [{'id': 'yes', 'description': 'Yes'}, {'id': 'no', 'description': 'No'}]}) + '\n')
-    args = ['cs1-score', '--backend', 'mlx', '--mode', 'direct', '--model', 'unused',
-            '--revision', 'unused', '--input', str(source), '--output', str(output)]
-    if limit is not None:
-        args += ['--mlx-cache-limit-mib', str(limit)]
-    monkeypatch.setattr(sys, 'argv', args)
-    main()
-    assert json.loads(output.read_text())['limit'] == (256 if limit is None else limit)
 
 
 @pytest.fixture
@@ -78,19 +38,6 @@ def backends(monkeypatch):
     results = [{"id": "first", "probabilities": [0.25, 0.75]},
                {"id": "second", "probabilities": [0.8, 0.2]}]
     timing = {"total_seconds": 0.125}
-
-    def mlx_loader(source, revision, bits, *, cache_limit_mib):
-        """Real signature: stale torch-only arguments fail here."""
-
-    mlx = ModuleType("cs1_bench.mlx_backend")
-    mlx.DEFAULT_CACHE_LIMIT_MIB = 256
-    mlx.load_model = create_autospec(mlx_loader, return_value=loaded)
-    mlx.score = Mock(side_effect=results)
-    mlx.score_shared = Mock(return_value=(results, timing))
-    mlx.SerialPrefixScorer = Mock(return_value=SimpleNamespace(score=Mock(side_effect=results)))
-    monkeypatch.setitem(sys.modules, mlx.__name__, mlx)
-    monkeypatch.setattr(cs1_bench, "mlx_backend", mlx, raising=False)
-
     torch = SimpleNamespace(
         load_causal_model=Mock(return_value=loaded),
         direct_score=Mock(side_effect=results),
@@ -100,22 +47,21 @@ def backends(monkeypatch):
     )
     for name, mock in vars(torch).items():
         monkeypatch.setattr(cli, name, mock)
-    return SimpleNamespace(mlx=mlx, torch=torch, loaded=loaded, results=results, timing=timing)
+    return SimpleNamespace(torch=torch, loaded=loaded, results=results, timing=timing)
 
 
 @pytest.mark.parametrize("mode", ["direct", "serial", "shared"])
-def test_mlx_routes_to_matching_scorer(run_cli, backends, mode):
-    run_cli.run(mode, "--backend", "mlx")
-    mlx = backends.mlx
+def test_torch_routes_to_matching_scorer(run_cli, backends, mode):
+    run_cli.run(mode)
+    torch = backends.torch
     model, tokenizer, metadata = backends.loaded
-    mlx.load_model.assert_called_once()
-    assert all(mock.call_count == 0 for mock in vars(backends.torch).values())
+    torch.load_causal_model.assert_called_once()
     if mode == "direct":
-        assert mlx.score.call_args_list == [call(model, tokenizer, row, metadata, 128) for row in run_cli.rows]
+        assert torch.direct_score.call_args_list == [call(model, tokenizer, row, metadata, 128) for row in run_cli.rows]
     elif mode == "serial":
-        assert mlx.SerialPrefixScorer.return_value.score.call_args_list == [call(row) for row in run_cli.rows]
+        assert torch.SerialPrefixScorer.return_value.score.call_args_list == [call(row) for row in run_cli.rows]
     else:
-        mlx.score_shared.assert_called_once_with(model, tokenizer, run_cli.rows, metadata, 128)
+        torch.score_shared.assert_called_once_with(model, tokenizer, run_cli.rows, metadata, 128)
     expected = backends.results if mode != "shared" else [
         {**result, "shared_timing": backends.timing} for result in backends.results
     ]
@@ -130,7 +76,6 @@ def test_torch_reranker_always_loads_cuda(run_cli, backends, flags):
     assert backends.torch.reranker_score.call_args_list == [
         call(model, tokenizer, row, metadata, 128) for row in run_cli.rows
     ]
-    backends.mlx.load_model.assert_not_called()
 
 
 @pytest.mark.parametrize("device", ["mps", "cpu"])
@@ -160,4 +105,3 @@ def test_existing_output_is_not_overwritten(run_cli, backends, capsys):
     assert "Output must be new" in capsys.readouterr().err
     assert run_cli.output.read_bytes() == original
     backends.torch.load_causal_model.assert_not_called()
-    backends.mlx.load_model.assert_not_called()
