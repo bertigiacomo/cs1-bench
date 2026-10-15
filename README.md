@@ -16,7 +16,7 @@ A System One decision takes a **state** (the evidence), a **question** (the crit
 | Runner: one model at a time, row-level results plus a run manifest | Planned |
 | Evaluator: accuracy, latency, stability | Planned |
 | Prompt conditions: language, format, system-role handling | Done |
-| Option-order variants for position bias | Planned |
+| Variants: prompt conditions × option rotations (`cs1-variants`) | Done |
 
 ## Decision format
 
@@ -67,6 +67,29 @@ Other details:
 - Rows without an `id` get one derived from their content, so the ID stays the same when rows are reordered.
 - Unknown columns are kept in `meta`.
 - Any invalid row stops the import, and the error names the record.
+
+## Generating variants
+
+`cs1-variants` takes imported decisions and makes one row per experimental condition:
+
+```bash
+cs1-variants data/tickets.jsonl --output data/tickets-variants.jsonl \
+  --langs en,it --formats json,text --roles native,merge --rotations cyclic
+```
+
+With `--rotations cyclic`, the options get shifted around so that every option shows up in every position exactly once:
+
+```text
+r0: A=account  B=billing  C=sales
+r1: A=billing  B=sales    C=account
+r2: A=sales    B=account  C=billing
+```
+
+The `answer` stays the same option ID in every rotation. If a model keeps picking `A` no matter what's behind it, that's position bias.
+
+Each variant gets its own ID (like `d1#it.text.merge.r2`) and remembers where it came from in `base_id`, plus its `rotation`. None of this reaches the prompt.
+
+Watch the size: the variants multiply. 2 languages × 2 formats × 2 roles × 3 rotations is 24 rows per decision, so 100 decisions become 2,400 forward passes per model.
 
 ## Quick start
 
