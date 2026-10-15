@@ -1,0 +1,199 @@
+"""Run one model over decision variants and write row-level predictions plus a run manifest."""
+
+from __future__ import annotations
+
+import argparse
+import collections
+import datetime
+import hashlib
+import json
+import platform
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+from . import __version__
+from .cli import add_model_arguments, check_model_arguments, load_backend
+from .conditions import VARIANT_FIELDS
+from .core import prompt_condition, supports_system_role, validate_row
+
+MANIFEST_SCHEMA = "cs1-bench-run-v1"
+# Copied from each input row into its prediction, so the predictions file is self-contained.
+CARRIED_FIELDS = (*VARIANT_FIELDS, "system_role_requested", "answer", "lang", "group_id")
+# The reranker builds its own prompt, so prompt conditions do not apply to it.
+PROMPT_FIELDS = ("prompt_lang", "prompt_format", "system_role", "system_role_requested")
+
+
+def _utc_now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def _git_state() -> dict:
+    root = Path(__file__).resolve().parent
+    try:
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True,
+                                text=True, check=True).stdout.strip()
+        changes = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=root,
+                                 capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return {"git_commit": None, "git_dirty": None}
+    return {"git_commit": commit, "git_dirty": bool(changes)}
+
+
+def _environment() -> dict:
+    environment = {"python": platform.python_version(), "platform": platform.platform(),
+                   "machine": platform.machine()}
+    try:
+        import torch
+    except ImportError:
+        return environment
+    environment["torch"] = torch.__version__
+    if torch.cuda.is_available():
+        environment["gpu"] = torch.cuda.get_device_name(0)
+    return environment
+
+
+def resolve_system_roles(rows: list[dict], tokenizer) -> tuple[list[dict], bool, int]:
+    """Fold the system prompt into the user turn when the chat template has no usable system role."""
+    if supports_system_role(tokenizer):
+        return rows, True, 0
+    resolved, fallbacks = [], 0
+    for row in rows:
+        if prompt_condition(row)["system_role"] == "native":
+            row = {**row, "system_role": "merge", "system_role_requested": "native"}
+            fallbacks += 1
+        resolved.append(row)
+    return resolved, False, fallbacks
+
+
+def scoring_units(rows: list[dict], mode: str) -> list[list[dict]]:
+    """Split rows into units: one row each, or one group per exact state and prompt condition."""
+    if mode not in {"serial", "shared"}:
+        return [[row] for row in rows]
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        key = json.dumps([row["state"], prompt_condition(row)], ensure_ascii=False, sort_keys=True)
+        groups.setdefault(key, []).append(row)
+    return list(groups.values())
+
+
+def _carried(row: dict, mode: str) -> dict:
+    fields = [field for field in CARRIED_FIELDS if mode != "reranker" or field not in PROMPT_FIELDS]
+    return {field: row[field] for field in fields if field in row}
+
+
+def _score_unit(unit, mode, scorers, model, tokenizer, metadata, max_tokens, serial_scorer) -> list[dict]:
+    """Score one unit; a ValueError marks its rows as failed instead of stopping the run."""
+    if mode == "shared":
+        try:
+            results, timing = scorers.shared(model, tokenizer, unit, metadata, max_tokens)
+        except ValueError as error:
+            return [{**_carried(row, mode), "id": row["id"], "error": str(error)} for row in unit]
+        return [{**_carried(row, mode), **result, "shared_timing": timing} for row, result in zip(unit, results)]
+    records = []
+    for row in unit:
+        try:
+            if mode == "serial":
+                result = serial_scorer.score(row)
+            else:
+                result = getattr(scorers, mode)(model, tokenizer, row, metadata, max_tokens)
+        except ValueError as error:
+            result = {"id": row["id"], "error": str(error)}
+        records.append({**_carried(row, mode), **result})
+    return records
+
+
+def _warm_up(units, mode, scorers, model, tokenizer, metadata, max_tokens, repeats: int) -> None:
+    """Run the first unit untimed so one-off kernel and allocator setup does not skew latencies."""
+    for _ in range(repeats):
+        serial_scorer = scorers.serial(model, tokenizer, metadata, max_tokens) if mode == "serial" else None
+        _score_unit(units[0], mode, scorers, model, tokenizer, metadata, max_tokens, serial_scorer)
+
+
+def run(rows: list[dict], output_dir: Path, args: argparse.Namespace, input_path: Path) -> dict:
+    """Score every row with one model; always leave a manifest describing what happened."""
+    output_dir.mkdir(parents=True, exist_ok=False)
+    manifest = {
+        "schema": MANIFEST_SCHEMA,
+        "status": "running",
+        "cs1_bench_version": __version__,
+        "code": _git_state(),
+        "command": sys.argv,
+        "mode": args.mode,
+        "backend": args.backend,
+        "model": {"source": args.model, "revision": args.revision},
+        "input": {"path": str(input_path), "sha256": hashlib.sha256(input_path.read_bytes()).hexdigest(),
+                  "rows": len(rows)},
+        "warmup_repeats": args.warmup,
+        "environment": _environment(),
+        "started_utc": _utc_now(),
+    }
+    started = time.perf_counter()
+    try:
+        model, tokenizer, metadata, scorers = load_backend(args)
+        manifest["model"] = metadata
+        manifest["load_seconds"] = time.perf_counter() - started
+        if args.mode != "reranker":
+            rows, supported, fallbacks = resolve_system_roles(rows, tokenizer)
+            manifest["system_role_supported"], manifest["system_role_fallbacks"] = supported, fallbacks
+        manifest["conditions"] = {
+            field: dict(collections.Counter(str(row.get(field, prompt_condition(row).get(field))) for row in rows))
+            for field in ("prompt_lang", "prompt_format", "system_role", "rotation")
+        }
+        units = scoring_units(rows, args.mode)
+        _warm_up(units, args.mode, scorers, model, tokenizer, metadata, args.max_tokens, args.warmup)
+        serial_scorer = scorers.serial(model, tokenizer, metadata, args.max_tokens) if args.mode == "serial" else None
+        scored = errors = 0
+        scoring_started = time.perf_counter()
+        with (output_dir / "predictions.jsonl").open("x", encoding="utf-8") as destination:
+            for unit in units:
+                for record in _score_unit(unit, args.mode, scorers, model, tokenizer, metadata,
+                                          args.max_tokens, serial_scorer):
+                    errors += "error" in record
+                    scored += "error" not in record
+                    destination.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n")
+                destination.flush()
+        manifest["scoring_seconds"] = time.perf_counter() - scoring_started
+        manifest["rows_scored"], manifest["rows_failed"] = scored, errors
+        manifest["status"] = "completed"
+    except BaseException as error:
+        manifest["status"] = "failed"
+        manifest["error"] = f"{type(error).__name__}: {error}"
+        raise
+    finally:
+        manifest["finished_utc"] = _utc_now()
+        manifest["wall_seconds"] = time.perf_counter() - started
+        with (output_dir / "manifest.json").open("x", encoding="utf-8") as destination:
+            destination.write(json.dumps(manifest, ensure_ascii=False, indent=2, default=str) + "\n")
+    return manifest
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("input", type=Path, help="Decisions or variants JSONL (from cs1-import or cs1-variants)")
+    parser.add_argument("--output", type=Path, required=True, help="New directory for predictions and manifest")
+    parser.add_argument("--warmup", type=int, default=1, help="Untimed repeats of the first unit (default: 1)")
+    add_model_arguments(parser)
+    args = parser.parse_args()
+    if args.output.exists():
+        parser.error("Output directory must be new")
+    if args.warmup < 0:
+        parser.error("--warmup must be nonnegative")
+    check_model_arguments(parser, args)
+    rows = [json.loads(line) for line in args.input.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if not rows:
+        parser.error("Input is empty")
+    for row in rows:
+        try:
+            validate_row(row)
+        except ValueError as error:
+            parser.error(f"row {row.get('id')!r}: {error}")
+    if len({row["id"] for row in rows}) != len(rows):
+        parser.error("Row IDs must be unique")
+    manifest = run(rows, args.output, args, args.input)
+    print(f"{manifest['rows_scored']} scored, {manifest['rows_failed']} failed -> {args.output}")
+
+
+if __name__ == "__main__":
+    main()

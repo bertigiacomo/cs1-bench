@@ -25,6 +25,7 @@ dependencies = [
 cs1-score = "cs1_bench.cli:main"
 cs1-import = "cs1_bench.data:main"
 cs1-variants = "cs1_bench.conditions:main"
+cs1-run = "cs1_bench.runner:main"
 
 [project.optional-dependencies]
 test = ["pytest==8.4.2"]

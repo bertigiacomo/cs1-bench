@@ -13,7 +13,7 @@ A System One decision takes a **state** (the evidence), a **question** (the crit
 | Scoring engine (direct, serial, shared, reranker) | Imported from SemIf |
 | Backends: Torch (CUDA, MPS, CPU) and llama.cpp (GGUF) | Imported from SemIf |
 | Data import: CSV, JSON and JSONL into canonical decisions (`cs1-import`) | Done |
-| Runner: one model at a time, row-level results plus a run manifest | Planned |
+| Runner: one model at a time, row-level results plus a run manifest (`cs1-run`) | Done |
 | Evaluator: accuracy, latency, stability | Planned |
 | Prompt conditions: language, format, system-role handling | Done |
 | Variants: prompt conditions × option rotations (`cs1-variants`) | Done |
@@ -102,19 +102,37 @@ pip install -e '.[test]'
 pytest -q
 ```
 
-Score a JSONL file with a pinned model:
+## Running a model
+
+The whole pipeline is import → variants → run:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 cs1-score --mode direct \
+cs1-import tickets.csv --output data/tickets.jsonl --lang it
+cs1-variants data/tickets.jsonl --output data/tickets-variants.jsonl --langs en,it --rotations cyclic
+CUDA_VISIBLE_DEVICES=0 cs1-run data/tickets-variants.jsonl --mode direct \
   --model Qwen/Qwen3.5-4B --revision 851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a \
-  --input decisions.jsonl --output runs/qwen3.5-4b.jsonl
+  --output runs/qwen3.5-4b/
 ```
 
-The output path must not exist yet. Other options:
+`cs1-run` loads the model once, scores every row and creates a new folder with two files:
+
+- `predictions.jsonl`: one line per variant with the option probabilities, timings, prompt conditions, and the gold `answer`. It's everything the evaluator needs.
+- `manifest.json`: what was run and how. That includes the git commit of the code (and whether it had uncommitted changes), the exact command, model and revision, a hash of the input file, how many rows had each condition, timings, and the hardware.
+
+A few things it does for you:
+
+- **Warm-up.** The first pass on a GPU is always slow (kernels loading, memory allocation), so the first row is run once and thrown away. Change this with `--warmup N`.
+- **System-role fallback.** If a model's chat template doesn't accept a system message, `native` rows are switched to `merge`. They're marked with `system_role_requested: "native"`, so nothing is changed silently.
+- **Per-row errors.** If a row can't be scored (for example, the tokenizer splits `A` into two tokens), it gets an `error` field and the run keeps going.
+- **A manifest even on a crash**, with `"status": "failed"` and the error message.
+
+Other options:
 
 - `--mode`: `direct`, `serial`, `shared` or `reranker`.
 - `--device`: `cuda`, `mps` or `cpu`.
 - `--backend llamacpp --gguf model.gguf`: score a GGUF checkpoint with llama.cpp (install with `pip install -e '.[test,llamacpp]'`).
+
+`cs1-score` is the old single-file scorer from SemIf. It's still there for quick checks, but it doesn't write a manifest.
 
 ## How scoring works
 
