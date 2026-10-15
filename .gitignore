@@ -9,3 +9,4 @@ results*.jsonl
 reranker-results*.jsonl
 models/
 cache/
+.DS_Store
