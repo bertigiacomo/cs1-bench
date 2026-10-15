@@ -26,7 +26,7 @@ import weakref
 
 import numpy
 
-from .core import LETTERS, direct_messages, softmax
+from .core import LETTERS, direct_messages, prompt_condition, softmax
 from .direct import PROMPT_VERSION, encode_prompt
 from .shared import _state_prefix
 
@@ -286,6 +286,7 @@ def _result(row: dict, encoded, selected: list[float], vocabulary, metadata: dic
         "full_vocab_argmax_id": int(vocabulary.argmax()),
         "prompt_sha256": prompt_hash,
         "prompt_version": PROMPT_VERSION,
+        **prompt_condition(row),
         "model": {**metadata, "serving_config": config},
         "readout": readout,
         "probability_status": "conditional option score over quantized weights; uncalibrated as decision confidence",
@@ -321,7 +322,7 @@ class SerialPrefixScorer:
         started = time.perf_counter()
         encoded = self.model.encode_verified(row, self.max_tokens)
         ids, slots, _ = encoded
-        prefix = _state_prefix(self.tokenizer, row["state"])
+        prefix = _state_prefix(self.tokenizer, row)
         hit = self.state_data is not None and prefix == self.prefix
         if not prefix or ids[: len(prefix)] != prefix or len(ids) <= len(prefix):
             raise ValueError("State prefix does not match the full prompt")
@@ -360,13 +361,14 @@ class SerialPrefixScorer:
 
 def score_shared(model, tokenizer, rows: list[dict], metadata: dict, max_tokens: int = 4096):
     """Prefill one exact state once, then score every criterion from restored branches."""
-    if not rows or any(row["state"] != rows[0]["state"] for row in rows[1:]):
-        raise ValueError("Shared scoring requires one nonempty exact state")
+    if not rows or any(row["state"] != rows[0]["state"] or prompt_condition(row) != prompt_condition(rows[0])
+                       for row in rows[1:]):
+        raise ValueError("Shared scoring requires one nonempty exact state and prompt condition")
     if len({row["id"] for row in rows}) != len(rows):
         raise ValueError("Decision IDs must be unique")
     started = time.perf_counter()
     encoded = [model.encode_verified(row, max_tokens) for row in rows]
-    prefix = _state_prefix(tokenizer, rows[0]["state"])
+    prefix = _state_prefix(tokenizer, rows[0])
     if not prefix or any(ids[: len(prefix)] != prefix or len(ids) <= len(prefix) for ids, _, _ in encoded):
         raise ValueError("The fixed state prefix does not match every full prompt")
     encode_seconds = time.perf_counter() - started

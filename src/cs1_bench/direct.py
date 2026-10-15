@@ -5,9 +5,10 @@ from __future__ import annotations
 import inspect
 import time
 
-from .core import LETTERS, digest, direct_messages, softmax, synchronize
+from .core import LETTERS, digest, direct_messages, prompt_condition, softmax, synchronize
 
-PROMPT_VERSION = "direct-options-v1"
+# v2: natural en/it wording, json or text layout, native or merged system turn, and a closing line.
+PROMPT_VERSION = "direct-options-v2"
 
 
 def _slot_ids(tokenizer, count: int) -> list[int]:
@@ -61,16 +62,21 @@ def score(model, tokenizer, row: dict, metadata: dict, max_tokens: int = 4096) -
         vocabulary = _forward(model, inputs)[0].float()
     synchronize(device)
     selected = vocabulary[slots].cpu().tolist()
+    forward_seconds = time.perf_counter() - forward_start
     return {
         "id": row["id"],
         "option_ids": [option["id"] for option in row["options"]],
         "probabilities": softmax(selected),
         "option_logits": selected,
         "input_tokens": len(ids),
-        "forward_seconds": time.perf_counter() - forward_start,
+        # Share of the full next-token distribution that falls on the answer letters.
+        "allowed_token_mass": float((vocabulary[slots].logsumexp(-1) - vocabulary.logsumexp(-1)).exp()),
+        "full_vocab_argmax_id": int(vocabulary.argmax()),
+        "forward_seconds": forward_seconds,
         "total_seconds": time.perf_counter() - started,
         "prompt_sha256": prompt_hash,
         "prompt_version": PROMPT_VERSION,
+        **prompt_condition(row),
         "model": metadata,
         "readout": "native full-vocabulary last-position logits restricted to declared answer slots",
         "probability_status": "conditional option score; uncalibrated as decision confidence",

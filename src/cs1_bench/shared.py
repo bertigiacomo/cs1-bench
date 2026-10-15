@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import copy
 import inspect
-import json
 import time
 
-from .core import direct_messages, softmax, synchronize
+from .core import direct_messages, evidence_prefix, prompt_condition, softmax, synchronize
 from .direct import PROMPT_VERSION, encode_prompt
 
 
-def _state_prefix(tokenizer, state) -> list[int]:
-    row = {
+def _state_prefix(tokenizer, row: dict) -> list[int]:
+    placeholder = {
+        **prompt_condition(row),
         "id": "prefix-only",
-        "state": state,
+        "state": row["state"],
         # This value occurs after the extracted evidence boundary.
         "question": "prefix boundary placeholder",
         "options": [
@@ -22,14 +22,14 @@ def _state_prefix(tokenizer, state) -> list[int]:
             {"id": "no", "description": "No"},
         ],
     }
-    turns = direct_messages(row)
+    turns = direct_messages(placeholder)
     prompt = tokenizer.apply_chat_template(
         turns, tokenize=False, add_generation_prompt=True, enable_thinking=False
     )
     payload = turns[-1]["content"]
     if prompt.count(payload) != 1:
         raise ValueError("Cannot locate the unmodified evidence payload in the chat template")
-    evidence = json.dumps({"evidence": state}, ensure_ascii=False)[:-1]
+    evidence = evidence_prefix(placeholder)
     if not payload.startswith(evidence):
         raise ValueError("Evidence serialization changed")
     text = prompt[: prompt.index(payload)] + evidence
@@ -55,13 +55,14 @@ def score_shared(model, tokenizer, rows: list[dict], metadata: dict, max_tokens:
     """Return all option distributions together after one state prefill."""
     import torch
 
-    if not rows or any(row["state"] != rows[0]["state"] for row in rows[1:]):
-        raise ValueError("Shared scoring requires one nonempty exact state")
+    if not rows or any(row["state"] != rows[0]["state"] or prompt_condition(row) != prompt_condition(rows[0])
+                       for row in rows[1:]):
+        raise ValueError("Shared scoring requires one nonempty exact state and prompt condition")
     if len({row["id"] for row in rows}) != len(rows):
         raise ValueError("Decision IDs must be unique")
     started = time.perf_counter()
     encoded = [encode_prompt(tokenizer, row, max_tokens) for row in rows]
-    prefix = _state_prefix(tokenizer, rows[0]["state"])
+    prefix = _state_prefix(tokenizer, rows[0])
     if not prefix or any(ids[: len(prefix)] != prefix or len(ids) <= len(prefix) for ids, _, _ in encoded):
         raise ValueError("The fixed state prefix does not match every full prompt")
     pad = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
@@ -153,8 +154,11 @@ def score_shared(model, tokenizer, rows: list[dict], metadata: dict, max_tokens:
                     "probabilities": softmax(selected),
                     "option_logits": selected,
                     "input_tokens": len(ids),
+                    "allowed_token_mass": float((vocabulary[slots].logsumexp(-1) - vocabulary.logsumexp(-1)).exp()),
+                    "full_vocab_argmax_id": int(vocabulary.argmax()),
                     "prompt_sha256": prompt_hash,
                     "prompt_version": PROMPT_VERSION,
+                    **prompt_condition(row),
                     "model": {**metadata, "serving_config": (
                         "native-state-prefix-looped-v1" if looped else "native-state-prefix-parallel-v1"
                     )},

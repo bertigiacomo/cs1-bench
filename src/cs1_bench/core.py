@@ -9,10 +9,44 @@ import re
 from pathlib import Path
 
 LETTERS = "ABCDEFGHIJKLMNOP"
-DIRECT_SYSTEM = (
-    "Apply the supplied criterion to the supplied evidence. Choose exactly one listed option. "
-    "Respond with only its uppercase letter, with no explanation or reasoning."
-)
+# Natural, parallel wording per language; option letters stay A-P in every language.
+# "evidence" names the JSON key and the text-format tag; "closing" ends both formats,
+# right before the position where the letter logits are read.
+PROMPTS = {
+    "en": {
+        "system": (
+            "Evaluate the given information against the stated criterion and choose exactly one of the listed "
+            "options. Reply only with the corresponding uppercase letter, without adding explanations or reasoning."
+        ),
+        "evidence": "information", "criterion": "criterion", "options": "options",
+        "letter": "letter", "description": "description",
+        "question_label": "Question", "options_label": "Options",
+        "closing": "Answer with the letter of the best option.",
+    },
+    "it": {
+        "system": (
+            "Valuta gli elementi forniti in base al criterio indicato e scegli una sola opzione tra quelle elencate. "
+            "Rispondi esclusivamente con la lettera maiuscola corrispondente, senza aggiungere spiegazioni o ragionamenti."
+        ),
+        "evidence": "elementi", "criterion": "criterio", "options": "opzioni",
+        "letter": "lettera", "description": "descrizione",
+        "question_label": "Domanda", "options_label": "Opzioni",
+        "closing": "Rispondi con la lettera dell'opzione migliore.",
+    },
+}
+# json: SemIf's single JSON object; text: tagged evidence plus a plain "A. ..." multiple-choice list.
+PROMPT_FORMATS = ("json", "text")
+# native: a separate system turn; merge: system text prepended to the user turn.
+SYSTEM_ROLES = ("native", "merge")
+
+
+def prompt_condition(row: dict) -> dict:
+    """Return the prompt condition of a row; absent fields mean English, JSON layout, and a system turn."""
+    return {
+        "prompt_lang": row.get("prompt_lang", "en"),
+        "prompt_format": row.get("prompt_format", "json"),
+        "system_role": row.get("system_role", "native"),
+    }
 
 
 def validate_row(row: dict) -> None:
@@ -38,22 +72,80 @@ def validate_row(row: dict) -> None:
         ids.append(option["id"])
     if len(ids) != len(set(ids)):
         raise ValueError("Option IDs must be unique")
+    condition = prompt_condition(row)
+    if condition["prompt_lang"] not in PROMPTS:
+        raise ValueError(f"prompt_lang must be one of {sorted(PROMPTS)}")
+    if condition["prompt_format"] not in PROMPT_FORMATS:
+        raise ValueError(f"prompt_format must be one of {list(PROMPT_FORMATS)}")
+    if condition["system_role"] not in SYSTEM_ROLES:
+        raise ValueError(f"system_role must be one of {list(SYSTEM_ROLES)}")
+
+
+def _evidence_block(state, prompt_format: str, text: dict) -> str:
+    """Render the state-only start of the user content, shared by every question about that state."""
+    if prompt_format == "json":
+        return json.dumps({text["evidence"]: state}, ensure_ascii=False)[:-1]
+    tag = text["evidence"]
+    if isinstance(state, str) and f"</{tag}>" not in state.lower():
+        body = state
+    else:
+        # Objects become JSON; escaping "</" keeps the state from closing the tag early.
+        body = json.dumps(state, ensure_ascii=False).replace("</", "<\\/")
+    return f"<{tag}>\n{body}\n</{tag}>"
+
+
+def _user_content(row: dict, condition: dict, text: dict) -> str:
+    descriptions = [option["description"] for option in row["options"]]
+    if condition["prompt_format"] == "json":
+        body = json.dumps({
+            text["evidence"]: row["state"],
+            text["criterion"]: row["question"],
+            text["options"]: [
+                {text["letter"]: LETTERS[index], text["description"]: description}
+                for index, description in enumerate(descriptions)
+            ],
+        }, ensure_ascii=False)
+    else:
+        choices = "\n".join(f"{LETTERS[index]}. {description}" for index, description in enumerate(descriptions))
+        body = (
+            _evidence_block(row["state"], "text", text)
+            + f"\n\n{text['question_label']}: {row['question']}\n\n{text['options_label']}:\n{choices}"
+        )
+    return body + "\n\n" + text["closing"]
 
 
 def direct_messages(row: dict) -> list[dict]:
     validate_row(row)
-    payload = {
-        "evidence": row["state"],
-        "criterion": row["question"],
-        "options": [
-            {"letter": LETTERS[index], "description": option["description"]}
-            for index, option in enumerate(row["options"])
-        ],
-    }
+    condition = prompt_condition(row)
+    text = PROMPTS[condition["prompt_lang"]]
+    content = _user_content(row, condition, text)
+    if condition["system_role"] == "merge":
+        return [{"role": "user", "content": text["system"] + "\n\n" + content}]
     return [
-        {"role": "system", "content": DIRECT_SYSTEM},
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        {"role": "system", "content": text["system"]},
+        {"role": "user", "content": content},
     ]
+
+
+def evidence_prefix(row: dict) -> str:
+    """Return the start of the user turn that depends only on the state and the prompt condition."""
+    condition = prompt_condition(row)
+    text = PROMPTS[condition["prompt_lang"]]
+    evidence = _evidence_block(row["state"], condition["prompt_format"], text)
+    return text["system"] + "\n\n" + evidence if condition["system_role"] == "merge" else evidence
+
+
+def supports_system_role(tokenizer) -> bool:
+    """Check that the chat template accepts a system turn and keeps its text."""
+    marker = "cs1-system-role-probe"
+    try:
+        prompt = tokenizer.apply_chat_template(
+            [{"role": "system", "content": marker}, {"role": "user", "content": "probe"}],
+            tokenize=False, add_generation_prompt=True, enable_thinking=False,
+        )
+    except Exception:  # Templates reject system turns with assorted exception types.
+        return False
+    return marker in prompt
 
 
 def softmax(values: list[float]) -> list[float]:

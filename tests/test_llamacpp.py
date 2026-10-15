@@ -154,7 +154,7 @@ def test_serial_cache_keys_on_exact_prefix_tokens(monkeypatch):
     monkeypatch.setattr(
         llamacpp_backend,
         "_state_prefix",
-        lambda tokenizer, state: [1 if key == "a" else 2 for key in state],
+        lambda tokenizer, row: [1 if key == "a" else 2 for key in row["state"]],
     )
     model = FakeModel()
     scorer = llamacpp_backend.SerialPrefixScorer(model, object(), {})

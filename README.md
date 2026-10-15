@@ -15,7 +15,8 @@ A System One decision takes a **state** (the evidence), a **question** (the crit
 | Data import: CSV, JSON and JSONL into canonical decisions (`cs1-import`) | Done |
 | Runner: one model at a time, row-level results plus a run manifest | Planned |
 | Evaluator: accuracy, latency, stability | Planned |
-| Bias conditions: system-prompt language, option position, system-role handling | Planned |
+| Prompt conditions: language, format, system-role handling | Done |
+| Option-order variants for position bias | Planned |
 
 ## Decision format
 
@@ -94,10 +95,40 @@ The output path must not exist yet. Other options:
 
 ## How scoring works
 
-The model receives the decision as JSON, with options labelled `A`, `B`, `C`… CS1-Bench runs one forward pass and keeps the logits of those letter tokens, so there is no decoding or answer parsing. The tokenizer must encode each letter as exactly one token, and appending it must not change how the prompt is tokenized. Otherwise the row fails instead of producing a silently wrong score.
+The model receives the decision with options labelled `A`, `B`, `C`… (see [Prompt conditions](#prompt-conditions) for the layouts). CS1-Bench runs one forward pass and keeps the logits of those letter tokens, so there is no decoding or answer parsing. The tokenizer must encode each letter as exactly one token, and appending it must not change how the prompt is tokenized. Otherwise the row fails instead of producing a silently wrong score.
 
 - `serial` and `shared` reuse the KV cache of a common `state` across questions.
 - `reranker` scores each option separately with Qwen3-Reranker. The model never sees the option order, so this mode serves as a control for position bias.
+
+Each output row also has `allowed_token_mass`: how much of the model's next-token probability lands on the answer letters at all. If it's low, the model wanted to say something else (like "The" or "Based"), and its letter scores are less trustworthy.
+
+## Prompt conditions
+
+Three optional fields on a row change how the prompt looks. They're experiment settings rather than data, so you won't usually write them by hand. Every output row records them.
+
+| Field | Values | What it does |
+|---|---|---|
+| `prompt_lang` | `en` (default), `it` | Language of the system prompt and of all the labels around the data |
+| `prompt_format` | `json` (default), `text` | `json` packs everything in one JSON object, like SemIf. `text` is a plain multiple-choice question |
+| `system_role` | `native` (default), `merge` | `merge` glues the system prompt onto the user message, for models whose chat template has no system role |
+
+This is the `text` format in English (the Italian one uses `<elementi>`, `Domanda`, `Opzioni`):
+
+```text
+<information>
+Customer asks to reset a forgotten password.
+</information>
+
+Question: Which queue should handle this request?
+
+Options:
+A. Account access and authentication support.
+B. Billing and payment support.
+
+Answer with the letter of the best option.
+```
+
+Both formats end with that last line, so it doesn't get mixed up with the format when comparing them.
 
 ## What changes from SemIf?
 
@@ -120,12 +151,20 @@ CS1-Bench builds on it with a broader question: are SLMs and LLMs good at fast d
 
 SemIf stores the right answer as a position (`"label": 2`). I switched to the option's ID (`"answer": "supported"`). To check position bias I shuffle the options around, and an index would then point at the wrong option unless I recomputed it every time. An ID stays correct whatever the order, so there's one less thing to get wrong.
 
-**Prompt language as a variable (coming soon)**
+**Natural prompts in two languages**
 
 SemIf's system prompt and JSON keys are only in English. My hunch is that small models might get confused when the data is in Italian but the prompt is in English. To check this properly, I track the prompt language and the data language (`lang`) separately and plan to run all four combinations (EN or IT prompt × EN or IT data). That way I can hopefully tell apart two things:
 
 - Italian data being harder for these models in general (less Italian in their training data, more tokens per word, different grammar).
 - The prompt and data languages not matching.
+
+I first tried a literal Italian translation of SemIf's prompt, but it sounded stiff and unnatural to a native speaker. So I wrote a natural Italian prompt first and then an English one that mirrors it sentence by sentence.
+
+**A plain-text format next to JSON**
+
+[Rizzo Flow](https://github.com/Rizzo-AI-Academy/rizzo-flow), another SemIf-inspired project, tried several prompt variants on one 4B model (bout the same size as the models I'm testing). Listing the options as plain `A. …` lines instead of JSON made answers much more stable when the options were reordered. Their test set was small, so it's a hint rather than proof. Since position bias is one of the things I want to measure, I kept both layouts as options and can compare them.
+
+The closing line ("Answer with the letter of the best option.") also comes from there. It repeats the instruction right where the letter probabilities are read.
 
 ## Credits
 
