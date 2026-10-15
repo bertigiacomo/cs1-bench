@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from semif_phase1.core import load_causal_model, resolve_device, synchronize
+from cs1_bench.core import load_causal_model, resolve_device, synchronize
 
 
 @pytest.fixture

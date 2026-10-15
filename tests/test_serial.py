@@ -1,4 +1,4 @@
-from semif_phase1.serial import _state_prefix
+from cs1_bench.serial import _state_prefix
 
 
 class Tokenizer:

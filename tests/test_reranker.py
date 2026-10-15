@@ -1,6 +1,6 @@
 import pytest
 
-from semif_phase1.reranker import _answer_ids, _encode
+from cs1_bench.reranker import _answer_ids, _encode
 
 
 class Tokenizer:

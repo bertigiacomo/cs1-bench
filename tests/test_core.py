@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from semif_phase1.core import direct_messages, softmax, validate_row
+from cs1_bench.core import direct_messages, softmax, validate_row
 
 
 ROW = {

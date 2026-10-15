@@ -7,9 +7,9 @@ from unittest.mock import Mock, call, create_autospec
 
 import pytest
 
-import semif_phase1
-from semif_phase1 import cli
-from semif_phase1.cli import main
+import cs1_bench
+from cs1_bench import cli
+from cs1_bench.cli import main
 
 
 @pytest.mark.parametrize("extra,message", [
@@ -19,7 +19,7 @@ from semif_phase1.cli import main
     (["--mode", "direct", "--backend", "mlx", "--mlx-cache-limit-mib", "-1"], "must be nonnegative"),
 ])
 def test_invalid_backend_combinations_fail_before_loading(tmp_path, monkeypatch, capsys, extra, message):
-    monkeypatch.setattr(sys, "argv", ["semif-score", "--model", "unused", "--revision", "unused",
+    monkeypatch.setattr(sys, "argv", ["cs1-score", "--model", "unused", "--revision", "unused",
                                     "--input", "missing.jsonl", "--output", str(tmp_path / "out.jsonl"), *extra])
     with pytest.raises(SystemExit) as error:
         main()
@@ -37,11 +37,11 @@ def test_cli_passes_cache_limit_to_loader(tmp_path, monkeypatch, limit):
         score=lambda model, tokenizer, row, metadata, max_tokens: metadata,
         SerialPrefixScorer=None, score_shared=None,
     )
-    monkeypatch.setattr(semif_phase1, 'mlx_backend', fake_backend, raising=False)
+    monkeypatch.setattr(cs1_bench, 'mlx_backend', fake_backend, raising=False)
     source, output = tmp_path / 'input.jsonl', tmp_path / 'output.jsonl'
     source.write_text(json.dumps({'id': 'test', 'state': 'Evidence', 'question': 'Supported?',
                                  'options': [{'id': 'yes', 'description': 'Yes'}, {'id': 'no', 'description': 'No'}]}) + '\n')
-    args = ['semif-score', '--backend', 'mlx', '--mode', 'direct', '--model', 'unused',
+    args = ['cs1-score', '--backend', 'mlx', '--mode', 'direct', '--model', 'unused',
             '--revision', 'unused', '--input', str(source), '--output', str(output)]
     if limit is not None:
         args += ['--mlx-cache-limit-mib', str(limit)]
@@ -63,7 +63,7 @@ def run_cli(tmp_path, monkeypatch):
 
     def run(mode="direct", *flags):
         monkeypatch.setattr(sys, "argv", [
-            "semif-score", "--mode", mode, "--model", "test/model",
+            "cs1-score", "--mode", mode, "--model", "test/model",
             "--revision", "a" * 40, "--input", str(source), "--output", str(output),
             "--max-tokens", "128", *flags,
         ])
@@ -82,14 +82,14 @@ def backends(monkeypatch):
     def mlx_loader(source, revision, bits, *, cache_limit_mib):
         """Real signature: stale torch-only arguments fail here."""
 
-    mlx = ModuleType("semif_phase1.mlx_backend")
+    mlx = ModuleType("cs1_bench.mlx_backend")
     mlx.DEFAULT_CACHE_LIMIT_MIB = 256
     mlx.load_model = create_autospec(mlx_loader, return_value=loaded)
     mlx.score = Mock(side_effect=results)
     mlx.score_shared = Mock(return_value=(results, timing))
     mlx.SerialPrefixScorer = Mock(return_value=SimpleNamespace(score=Mock(side_effect=results)))
     monkeypatch.setitem(sys.modules, mlx.__name__, mlx)
-    monkeypatch.setattr(semif_phase1, "mlx_backend", mlx, raising=False)
+    monkeypatch.setattr(cs1_bench, "mlx_backend", mlx, raising=False)
 
     torch = SimpleNamespace(
         load_causal_model=Mock(return_value=loaded),

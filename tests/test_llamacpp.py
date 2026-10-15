@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import numpy
 import pytest
 
-from semif_phase1.cli import main
+from cs1_bench.cli import main
 
 
 @pytest.mark.parametrize("extra,message", [
@@ -18,7 +18,7 @@ from semif_phase1.cli import main
     (["--mode", "direct", "--backend", "llamacpp", "--gguf", "missing.gguf"], "requires --gguf"),
 ])
 def test_invalid_llamacpp_combinations_fail_before_loading(tmp_path, monkeypatch, capsys, extra, message):
-    monkeypatch.setattr(sys, "argv", ["semif-score", "--model", "unused", "--revision", "unused",
+    monkeypatch.setattr(sys, "argv", ["cs1-score", "--model", "unused", "--revision", "unused",
                                     "--input", "missing.jsonl", "--output", str(tmp_path / "out.jsonl"), *extra])
     with pytest.raises(SystemExit) as error:
         main()
@@ -28,7 +28,7 @@ def test_invalid_llamacpp_combinations_fail_before_loading(tmp_path, monkeypatch
 
 
 def test_cli_passes_gguf_options_to_loader(tmp_path, monkeypatch):
-    import semif_phase1
+    import cs1_bench
 
     fake_backend = SimpleNamespace(
         load_model=lambda source, revision, gguf, *, threads, context_tokens:
@@ -36,13 +36,13 @@ def test_cli_passes_gguf_options_to_loader(tmp_path, monkeypatch):
         score=lambda model, tokenizer, row, metadata, max_tokens: metadata,
         SerialPrefixScorer=None, score_shared=None,
     )
-    monkeypatch.setattr(semif_phase1, "llamacpp_backend", fake_backend, raising=False)
+    monkeypatch.setattr(cs1_bench, "llamacpp_backend", fake_backend, raising=False)
     source, output, weights = tmp_path / "input.jsonl", tmp_path / "output.jsonl", tmp_path / "model.gguf"
     source.write_text(json.dumps({"id": "test", "state": "Evidence", "question": "Supported?",
                                  "options": [{"id": "yes", "description": "Yes"}, {"id": "no", "description": "No"}]}) + "\n")
     weights.write_bytes(b"gguf")
     monkeypatch.setattr(sys, "argv", [
-        "semif-score", "--backend", "llamacpp", "--mode", "direct", "--model", "unused",
+        "cs1-score", "--backend", "llamacpp", "--mode", "direct", "--model", "unused",
         "--revision", "unused", "--gguf", str(weights), "--llama-threads", "7",
         "--input", str(source), "--output", str(output)])
     main()
@@ -53,14 +53,14 @@ def test_cli_passes_gguf_options_to_loader(tmp_path, monkeypatch):
 
 
 def test_load_model_rejects_unpinned_remote_revision():
-    from semif_phase1 import llamacpp_backend
+    from cs1_bench import llamacpp_backend
 
     with pytest.raises(ValueError, match="pinned"):
         llamacpp_backend.load_model("Qwen/Qwen3.5-4B", "main", "/nonexistent.gguf")
 
 
 def test_load_model_rejects_missing_gguf(tmp_path):
-    from semif_phase1 import llamacpp_backend
+    from cs1_bench import llamacpp_backend
 
     with pytest.raises(ValueError, match="GGUF checkpoint not found"):
         llamacpp_backend.load_model("Qwen/Qwen3.5-4B",
@@ -69,7 +69,7 @@ def test_load_model_rejects_missing_gguf(tmp_path):
 
 
 def test_engine_refuses_empty_decode():
-    from semif_phase1.llamacpp_backend import _Engine
+    from cs1_bench.llamacpp_backend import _Engine
 
     engine = _Engine.__new__(_Engine)
     with pytest.raises(ValueError, match="empty"):
@@ -77,7 +77,7 @@ def test_engine_refuses_empty_decode():
 
 
 def test_cpu_model_params_initialize_once_and_disable_offload(monkeypatch):
-    from semif_phase1 import llamacpp_backend
+    from cs1_bench import llamacpp_backend
 
     calls = []
     library = SimpleNamespace(
@@ -92,7 +92,7 @@ def test_cpu_model_params_initialize_once_and_disable_offload(monkeypatch):
 
 
 def test_restore_state_rejects_native_failure():
-    from semif_phase1.llamacpp_backend import _Engine
+    from cs1_bench.llamacpp_backend import _Engine
 
     engine = _Engine.__new__(_Engine)
     engine.context = object()
@@ -106,7 +106,7 @@ def test_restore_state_rejects_native_failure():
 
 
 def test_engine_records_actual_native_context_size():
-    from semif_phase1.llamacpp_backend import _Engine
+    from cs1_bench.llamacpp_backend import _Engine
 
     context = object()
     library = SimpleNamespace(
@@ -122,7 +122,7 @@ def test_engine_records_actual_native_context_size():
 
 
 def test_serial_cache_keys_on_exact_prefix_tokens(monkeypatch):
-    from semif_phase1 import llamacpp_backend
+    from cs1_bench import llamacpp_backend
 
     class FakeEngine:
         def __init__(self):
@@ -177,7 +177,7 @@ def test_serial_cache_keys_on_exact_prefix_tokens(monkeypatch):
 
 @pytest.mark.skipif(not os.environ.get("SEMIF_LLAMACPP_GGUF"), reason="set SEMIF_LLAMACPP_GGUF to a local GGUF path")
 def test_real_gguf_scores_direct_serial_and_shared():
-    from semif_phase1 import llamacpp_backend
+    from cs1_bench import llamacpp_backend
 
     source = os.environ.get("SEMIF_LLAMACPP_SOURCE", "Qwen/Qwen3.5-4B")
     revision = os.environ.get(
