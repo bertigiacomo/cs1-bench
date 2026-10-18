@@ -90,14 +90,12 @@ def test_run_writes_self_contained_predictions_and_manifest(tmp_path, backend):
 
 def test_models_without_system_role_fall_back_to_merge_and_say_so(tmp_path, backend):
     backend.tokenizer = Tokenizer(system_role=False)
-    rows = expand(DECISION, roles=("native", "merge"))
+    rows = expand(DECISION, langs=("en", "it"))
     runner.run(rows, tmp_path / "out", make_args(), write_rows(tmp_path, rows))
     predictions, manifest = read_output(tmp_path / "out")
     assert all(row["system_role"] == "merge" for row in backend.direct)
-    native, merged = predictions
-    assert (native["system_role"], native["system_role_requested"]) == ("merge", "native")
-    assert "system_role_requested" not in merged
-    assert (manifest["system_role_supported"], manifest["system_role_fallbacks"]) == (False, 1)
+    assert all(prediction["system_role"] == "merge" for prediction in predictions)
+    assert (manifest["system_role_supported"], manifest["system_role_fallbacks"]) == (False, 2)
 
 
 def test_a_failing_row_is_recorded_and_the_run_continues(tmp_path, backend):
@@ -122,8 +120,7 @@ def test_shared_mode_groups_by_state_and_prompt_condition(tmp_path, backend):
     questions = [dict(DECISION, id=f"q{index}", question=f"Question {index}?") for index in range(2)]
     rows = [variant for question in questions for variant in expand(question, langs=("en", "it"))]
     runner.run(rows, tmp_path / "out", make_args(mode="shared"), write_rows(tmp_path, rows))
-    assert backend.shared == [["q0#en.json.native.r0", "q1#en.json.native.r0"],
-                              ["q0#it.json.native.r0", "q1#it.json.native.r0"]]
+    assert backend.shared == [["q0#en.json.r0", "q1#en.json.r0"], ["q0#it.json.r0", "q1#it.json.r0"]]
     predictions, _ = read_output(tmp_path / "out")
     assert all(prediction["shared_timing"] == {"total_seconds": 0.5} for prediction in predictions)
 
@@ -133,7 +130,6 @@ def test_reranker_predictions_do_not_claim_prompt_conditions(tmp_path, backend):
     runner.run(rows, tmp_path / "out", make_args(mode="reranker"), write_rows(tmp_path, rows))
     [prediction], manifest = read_output(tmp_path / "out")
     assert prediction["base_id"] == "d1"
-    assert "system_role_requested" not in prediction
     assert "system_role_supported" not in manifest
 
 
@@ -179,3 +175,9 @@ def test_run_reports_progress_on_stderr(tmp_path, backend, capsys):
     runner.run(rows, tmp_path / "out", make_args(), write_rows(tmp_path, rows))
     err = capsys.readouterr().err
     assert "[fake] loading fake" in err and "1/1 (100%)" in err and "done in" in err
+
+
+def test_system_role_in_the_input_is_ignored_when_the_template_supports_it(tmp_path, backend):
+    rows = [dict(DECISION, id="old", system_role="merge")]  # e.g. from an older variants file
+    runner.run(rows, tmp_path / "out", make_args(), write_rows(tmp_path, rows))
+    assert backend.direct[0]["system_role"] == "native"

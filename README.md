@@ -74,7 +74,7 @@ Other details:
 
 ```bash
 cs1 variants data/tickets.jsonl --output data/tickets-variants.jsonl \
-  --langs en,it --formats json,text --roles native,merge --rotations cyclic
+  --langs en,it --formats json,text --rotations cyclic
 ```
 
 With `--rotations cyclic`, the options get shifted around so that every option shows up in every position exactly once:
@@ -87,9 +87,9 @@ r2: A=sales    B=account  C=billing
 
 The `answer` stays the same option ID in every rotation. If a model keeps picking `A` no matter what's behind it, that's position bias.
 
-Each variant gets its own ID (like `d1#it.text.merge.r2`) and remembers where it came from in `base_id`, plus its `rotation`. None of this reaches the prompt.
+Each variant gets its own ID (like `d1#it.text.r2`) and remembers where it came from in `base_id`, plus its `rotation`. None of this reaches the prompt.
 
-Watch the size: the variants multiply. 2 languages × 2 formats × 2 roles × 3 rotations is 24 rows per decision, so 100 decisions become 2,400 forward passes per model.
+Watch the size: the variants multiply. 2 languages × 2 formats × 3 rotations is 12 rows per decision, so 100 decisions become 1,200 forward passes per model.
 
 For a cheaper position-bias check, `--rotations reverse` makes just two orders per decision: the original (`r0`) and the reversed one (`rotation: "reverse"`, IDs ending in `.rev`). That's 2 passes instead of one per option.
 
@@ -148,7 +148,7 @@ A few things it does for you:
 
 - **Progress on screen.** Every 10 seconds you get a line on stderr like `[Qwen3.5-4B] 1200/2400 (50%) · 38.2 rows/s · ETA 0:00:31 · errors 0`. It works inside tmux and in a log file (`cs1 run … 2>&1 | tee run.log`). Change the interval with `--progress-every`.
 - **Warm-up.** The first pass on a GPU is always slow (kernels loading, memory allocation), so the first row is run once and thrown away. Change this with `--warmup N`.
-- **System-role fallback.** If a model's chat template doesn't accept a system message, `native` rows are switched to `merge`. They're marked with `system_role_requested: "native"`, so nothing is changed silently.
+- **Our system prompt, always.** It goes in as a system message. If a model's chat template has no system role, it's put at the top of the user message instead. Each output row says which one happened (`system_role`: `native` or `merge`), and the manifest says whether the model supports a system role.
 - **Per-row errors.** If a row can't be scored (for example, the tokenizer splits `A` into two tokens), it gets an `error` field and the run keeps going.
 - **A manifest even on a crash**, with `"status": "failed"` and the error message. It also records the GPU's name, compute capability, and memory.
 
@@ -171,13 +171,12 @@ Each output row also has `allowed_token_mass`: how much of the model's next-toke
 
 ## Prompt conditions
 
-Three optional fields on a row change how the prompt looks. They're experiment settings rather than data, so you won't usually write them by hand. Every output row records them.
+Two optional fields on a row change how the prompt looks. They're experiment settings rather than data, so you won't usually write them by hand. Every output row records them, together with `system_role`, which isn't a setting: `cs1 run` picks it for each model (see above).
 
 | Field | Values | What it does |
 |---|---|---|
 | `prompt_lang` | `en` (default), `it` | Language of the system prompt and of all the labels around the data |
 | `prompt_format` | `json` (default), `text` | `json` packs everything in one JSON object, like SemIf. `text` is a plain multiple-choice question |
-| `system_role` | `native` (default), `merge` | `merge` glues the system prompt onto the user message, for models whose chat template has no system role |
 
 This is the `text` format in English (the Italian one uses `<elementi>`, `Criterio`, `Opzioni`):
 

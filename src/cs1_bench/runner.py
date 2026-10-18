@@ -20,9 +20,9 @@ from .core import prompt_condition, supports_system_role, validate_row
 
 MANIFEST_SCHEMA = "cs1-bench-run-v1"
 # Copied from each input row into its prediction, so the predictions file is self-contained.
-CARRIED_FIELDS = (*VARIANT_FIELDS, "system_role_requested", "answer", "lang", "group_id")
+CARRIED_FIELDS = (*VARIANT_FIELDS, "answer", "lang", "group_id")
 # The reranker builds its own prompt, so prompt conditions do not apply to it.
-PROMPT_FIELDS = ("prompt_lang", "prompt_format", "system_role", "system_role_requested")
+PROMPT_FIELDS = ("prompt_lang", "prompt_format")
 
 
 def _utc_now() -> str:
@@ -88,16 +88,14 @@ class Progress:
 
 
 def resolve_system_roles(rows: list[dict], tokenizer) -> tuple[list[dict], bool, int]:
-    """Fold the system prompt into the user turn when the chat template has no usable system role."""
-    if supports_system_role(tokenizer):
-        return rows, True, 0
-    resolved, fallbacks = [], 0
-    for row in rows:
-        if prompt_condition(row)["system_role"] == "native":
-            row = {**row, "system_role": "merge", "system_role_requested": "native"}
-            fallbacks += 1
-        resolved.append(row)
-    return resolved, False, fallbacks
+    """Send our system prompt as a system turn, or, if the chat template has none, at the top of the user turn.
+
+    Any system_role already in a row is ignored: the template decides, never the input file.
+    Scorers record the role actually used in each result as system_role (native or merge).
+    """
+    supported = supports_system_role(tokenizer)
+    role = "native" if supported else "merge"
+    return [{**row, "system_role": role} for row in rows], supported, 0 if supported else len(rows)
 
 
 def scoring_units(rows: list[dict], mode: str) -> list[list[dict]]:

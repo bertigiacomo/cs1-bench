@@ -7,13 +7,14 @@ import itertools
 import json
 from pathlib import Path
 
-from .core import PROMPT_FORMATS, PROMPTS, SYSTEM_ROLES, validate_row
+from .core import PROMPT_FORMATS, PROMPTS, validate_row
 from .data import validate_decision
 
 # none: original order only; cyclic: one shift per option; reverse: original plus reversed (2 passes).
 ROTATIONS = ("none", "cyclic", "reverse")
 # Fields a variant adds on top of its source decision; the runner copies them into every result.
-VARIANT_FIELDS = ("base_id", "rotation", "prompt_lang", "prompt_format", "system_role")
+# The system role is not a variant: the runner sends our system prompt the way each chat template accepts it.
+VARIANT_FIELDS = ("base_id", "rotation", "prompt_lang", "prompt_format")
 
 
 def rotate(options: list[dict], shift: int) -> list[dict]:
@@ -21,7 +22,7 @@ def rotate(options: list[dict], shift: int) -> list[dict]:
     return options[shift:] + options[:shift]
 
 
-def expand(decision: dict, langs=("en",), formats=("json",), roles=("native",), rotations: str = "none") -> list[dict]:
+def expand(decision: dict, langs=("en",), formats=("json",), rotations: str = "none") -> list[dict]:
     """Return every variant of one decision, in a fixed order."""
     validate_decision(decision)
     if rotations not in ROTATIONS:
@@ -34,16 +35,15 @@ def expand(decision: dict, langs=("en",), formats=("json",), roles=("native",), 
         if rotations == "reverse":
             orders.append(("reverse", "rev", options[::-1]))
     variants = []
-    for lang, prompt_format, role, (rotation, suffix, ordered) in itertools.product(langs, formats, roles, orders):
+    for lang, prompt_format, (rotation, suffix, ordered) in itertools.product(langs, formats, orders):
         variant = {
             **decision,
-            "id": f"{decision['id']}#{lang}.{prompt_format}.{role}.{suffix}",
+            "id": f"{decision['id']}#{lang}.{prompt_format}.{suffix}",
             "options": ordered,
             "base_id": decision["id"],
             "rotation": rotation,
             "prompt_lang": lang,
             "prompt_format": prompt_format,
-            "system_role": role,
         }
         validate_row(variant)
         variants.append(variant)
@@ -87,8 +87,6 @@ def main() -> None:
                         help="Prompt languages, e.g. en,it (default: en)")
     parser.add_argument("--formats", type=lambda value: _choices(value, PROMPT_FORMATS), default=("json",),
                         help="Prompt formats, e.g. json,text (default: json)")
-    parser.add_argument("--roles", type=lambda value: _choices(value, SYSTEM_ROLES), default=("native",),
-                        help="System-role handling, e.g. native,merge (default: native)")
     parser.add_argument("--rotations", choices=ROTATIONS, default="none",
                         help="cyclic: one variant per option position; reverse: original plus reversed order "
                              "(default: none)")
@@ -97,7 +95,7 @@ def main() -> None:
         parser.error("Output must be new")
     try:
         count = expand_file(args.input, args.output, langs=args.langs, formats=args.formats,
-                            roles=args.roles, rotations=args.rotations)
+                            rotations=args.rotations)
     except ValueError as error:
         parser.error(str(error))
     print(f"Wrote {count} variants into {args.output}")
