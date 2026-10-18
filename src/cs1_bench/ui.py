@@ -44,6 +44,10 @@ def banner(command: str, stream=None) -> None:
           file=stream, flush=True)
 
 
+def plural(count: int, word: str) -> str:
+    return f"{count} {word}" if count == 1 else f"{count} {word}s"
+
+
 def duration(seconds: float) -> str:
     """Short durations in seconds, longer ones as a clock: 53.2s, 0:10:44."""
     return f"{seconds:.1f}s" if seconds < 60 else str(datetime.timedelta(seconds=round(seconds)))

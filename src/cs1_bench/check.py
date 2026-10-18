@@ -211,8 +211,8 @@ def live_test(folder: Path, rows: list[dict], label: str, args: argparse.Namespa
     rate = manifest["rows_scored"] / manifest["scoring_seconds"] if manifest["scoring_seconds"] else 0.0
     report(OK, f"loaded {model.get('model_class')} in {ui.duration(manifest['load_seconds'])} on {model.get('device')}")
     first_error = next((f": {p['error']}" for p in predictions if "error" in p), "")
-    report(FAIL if failed else OK, f"scored {len(predictions)} rows in {ui.duration(manifest['scoring_seconds'])} "
-                                   f"({rate:.1f} rows/s), {errors(failed)}, system role {roles}{first_error}")
+    scored = f"scored {ui.plural(len(predictions), 'row')} in {ui.duration(manifest['scoring_seconds'])}"
+    report(FAIL if failed else OK, f"{scored} ({rate:.1f} rows/s), {errors(failed)}, system role {roles}{first_error}")
     answered = [p for p in predictions if "error" not in p and p.get("answer") is not None]
     correct = sum(p["option_ids"][max(range(len(p["probabilities"])), key=p["probabilities"].__getitem__)]
                   == p["answer"] for p in answered)

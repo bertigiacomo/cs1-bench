@@ -176,8 +176,8 @@ def test_run_reports_progress_on_stderr(tmp_path, backend, capsys):
     rows = [DECISION]
     runner.run(rows, tmp_path / "out", make_args(), write_rows(tmp_path, rows))
     err = capsys.readouterr().err
-    assert "fake\n  · loading fake (torch, direct)" in err
-    assert "  ▸ 1/1 (100%)" in err and "  ✓ done in" in err
+    assert "fake\n  · loading weights (torch, direct)" in err
+    assert "  ✓ scored 1 row in" in err and "0 errors" in err and "  ✓ done in" in err
 
 
 def test_system_role_in_the_input_is_ignored_when_the_template_supports_it(tmp_path, backend):
@@ -209,10 +209,10 @@ def test_terminals_get_a_live_bar_and_a_final_summary_line():
     progress.advance([{}, {"error": "x"}])
     progress.say("note above the bar")
     progress.advance([{}, {}])
-    progress.finish()
+    progress.close()
     output = stream.getvalue()
     assert progress.bar is None and "note above the bar" in output
-    assert "4/4 (100%)" in output and "1 error" in output
+    assert progress.failed == 1 and output.endswith("\r\033[2K")  # Bar and status line wiped at the end.
 
 
 def test_nested_runs_skip_the_heading_that_check_already_printed(tmp_path, backend, capsys, monkeypatch):
@@ -220,4 +220,4 @@ def test_nested_runs_skip_the_heading_that_check_already_printed(tmp_path, backe
     rows = [DECISION]
     runner.run(rows, tmp_path / "out", make_args(), write_rows(tmp_path, rows))
     err = capsys.readouterr().err
-    assert err.startswith("  · loading fake")
+    assert err.startswith("  · loading weights")

@@ -63,11 +63,12 @@ def _environment() -> dict:
 
 
 def errors(count: int) -> str:
-    return f"{count} error" if count == 1 else f"{count} errors"
+    return ui.plural(count, "error")
 
 
 class Progress:
-    """Report a run on stderr: a live bar on terminals (tmux included), one line per interval in logs."""
+    """Report a run on stderr. Terminals (tmux included): passing info on one self-erasing status line, then a
+    live bar. Logs: every line, plus one progress line per interval."""
 
     def __init__(self, label: str, total: int, every: float, clock=time.monotonic, stream=None):
         self.label, self.total, self.every, self.clock = label, total, every, clock
@@ -75,11 +76,17 @@ class Progress:
         self.started = self.last = clock()
         self.done = self.failed = 0
         self.bar = None
+        self.status = ui.StatusLine(self.stream)
 
     def heading(self) -> None:
         print(ui.heading(self.label, self.stream), file=self.stream, flush=True)
 
-    def say(self, message: str, status: str = ui.INFO) -> None:
+    def say(self, message: str, status: str = ui.INFO, keep: bool = False) -> None:
+        """Print a line; on terminals, info lines go on the status line unless kept."""
+        if status == ui.INFO and not keep and self.bar is None and self.status.active:
+            self.status.show(f"  {ui.INFO} {message}")  # Passing info: overwritten by the next line.
+            return
+        self.status.clear()
         text = ui.line(status, message, self.stream)
         if self.bar is not None:
             self.bar.write(text, file=self.stream)  # Printed above the bar, which is then redrawn.
@@ -91,6 +98,8 @@ class Progress:
         self.started = self.last = self.clock()
         if ui.is_terminal(self.stream):
             from tqdm import tqdm
+
+            self.status.clear()  # The bar takes over the status line.
 
             step = ui.paint(ui.STEP, ui.COLORS[ui.STEP], self.stream)
             # ascii=False: block characters, like the banner and marks (UTF-8 terminal assumed).
@@ -112,14 +121,11 @@ class Progress:
             self.say(self.line(now), ui.STEP)
 
     def close(self) -> None:
+        """Remove the live bar and the status line, leaving only lines worth keeping."""
         if self.bar is not None:
             self.bar.close()
             self.bar = None
-
-    def finish(self) -> None:
-        """Replace the live bar, if any, with one final summary line."""
-        self.close()
-        self.say(self.line(self.clock()), ui.STEP)
+        self.status.clear()
 
     def line(self, now: float) -> str:
         elapsed = max(now - self.started, 1e-9)
@@ -207,7 +213,8 @@ def run(rows: list[dict], output_dir: Path, args: argparse.Namespace, input_path
     try:
         if not os.environ.get(NESTED):
             progress.heading()
-        progress.say(f"loading {args.model} ({args.backend}, {args.mode})")
+        # Kept: transformers writes its own warnings and bar to the terminal while loading, below this line.
+        progress.say(f"loading weights ({args.backend}, {args.mode})", keep=True)
         if args.allow_remote_code:
             files = ", ".join(sorted(path.name for path in Path(args.model).glob("*.py"))) or "no local .py files"
             progress.say(f"remote code allowed: running {files}", ui.WARN)
@@ -215,10 +222,13 @@ def run(rows: list[dict], output_dir: Path, args: argparse.Namespace, input_path
         manifest["model"] = {**metadata, "revision_source": args.revision_source}
         manifest["load_seconds"] = time.perf_counter() - started
         device = metadata.get("device", args.backend)
-        progress.say(f"loaded in {manifest['load_seconds']:.1f}s on {device}", ui.OK)
+        loaded = metadata.get("model_class") or args.backend
+        progress.say(f"loaded {loaded} in {ui.duration(manifest['load_seconds'])} on {device}", ui.OK)
+        role = ""
         if args.mode != "reranker":
             rows, supported, fallbacks = resolve_system_roles(rows, tokenizer)
             manifest["system_role_supported"], manifest["system_role_fallbacks"] = supported, fallbacks
+            role = f", system role {'native' if supported else 'merge'}"
             if not supported:
                 progress.say(f"no system role in the chat template: system prompt goes in the user turn "
                              f"({fallbacks} rows)", ui.WARN)
@@ -231,7 +241,8 @@ def run(rows: list[dict], output_dir: Path, args: argparse.Namespace, input_path
             progress.say(f"warm-up ({args.warmup}x, untimed)")
         _warm_up(units, args.mode, scorers, model, tokenizer, metadata, args.max_tokens, args.warmup)
         serial_scorer = scorers.serial(model, tokenizer, metadata, args.max_tokens) if args.mode == "serial" else None
-        progress.say(f"scoring {len(rows)} rows in {len(units)} units")
+        groups = f" in {len(units)} groups" if args.mode in {"serial", "shared"} else ""
+        progress.say(f"scoring {ui.plural(len(rows), 'row')}{groups}")
         scoring_started = time.perf_counter()
         progress.start()
         with (output_dir / "predictions.jsonl").open("x", encoding="utf-8") as destination:
@@ -245,9 +256,14 @@ def run(rows: list[dict], output_dir: Path, args: argparse.Namespace, input_path
         manifest["scoring_seconds"] = time.perf_counter() - scoring_started
         manifest["rows_scored"], manifest["rows_failed"] = progress.done - progress.failed, progress.failed
         manifest["status"] = "completed"
-        progress.finish()
-        progress.say(f"done in {datetime.timedelta(seconds=round(time.perf_counter() - started))}, {output_dir}",
-                     ui.WARN if progress.failed else ui.OK)
+        progress.close()
+        failed, seconds = progress.failed, manifest["scoring_seconds"]
+        rate = progress.done / seconds if seconds else 0.0
+        progress.say(f"scored {ui.plural(progress.done, 'row')} in {ui.duration(seconds)} ({rate:.1f} rows/s), "
+                     f"{errors(failed)}{role}", ui.WARN if failed else ui.OK)
+        hint = " (failed rows have an 'error' field in predictions.jsonl)" if failed else ""
+        progress.say(f"done in {datetime.timedelta(seconds=round(time.perf_counter() - started))}, "
+                     f"{output_dir}{hint}", ui.WARN if failed else ui.OK)
     except BaseException as error:
         manifest["status"] = "failed"
         manifest["error"] = f"{type(error).__name__}: {error}"
@@ -288,10 +304,7 @@ def main() -> None:
         parser.error("Row IDs must be unique")
     if not os.environ.get(NESTED):
         ui.banner("run")
-    manifest = run(rows, args.output, args, args.input)
-    print(f"{manifest['rows_scored']} scored, {manifest['rows_failed']} failed -> {args.output}")
-    if manifest["rows_failed"]:
-        print(f"Failed rows carry an 'error' field in {args.output / 'predictions.jsonl'}")
+    run(rows, args.output, args, args.input)
 
 
 if __name__ == "__main__":
