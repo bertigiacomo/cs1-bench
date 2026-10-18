@@ -44,6 +44,11 @@ def classify_checkpoint(config: dict | None, allow_remote_code: bool = False) ->
         # No auto_map either, so no remote code could load it: this needs another engine, not a fix.
         return SKIP, (f"not evaluable with this engine: model_type {model_type!r} is unknown to transformers "
                       f"{transformers_version} and has no auto_map (it needs its own library, or a newer transformers)")
+    inner = [sub.get("model_type") for sub in (config.get("text_config"), config.get("vision_config"))
+             if isinstance(sub, dict) and sub.get("model_type") not in (None, *CONFIG_MAPPING_NAMES)]
+    if inner:  # e.g. mistral3 is known to transformers 4.57, but the ministral3 text model inside it is not.
+        return SKIP, (f"not evaluable with this engine: model_type {inner[0]!r} inside {model_type!r} is unknown to "
+                      f"transformers {transformers_version} (it needs a newer transformers)")
     if model_type in TEXT_EXTRACTED_MODEL_TYPES:
         return OK, f"loader supported: text model of {model_type}"
     found = auto_model_class(model_type)

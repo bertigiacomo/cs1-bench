@@ -12,6 +12,7 @@ import platform
 import subprocess
 import sys
 import time
+from importlib import metadata
 from pathlib import Path
 
 from . import __version__, ui
@@ -42,9 +43,20 @@ def _git_state() -> dict:
     return {"git_commit": commit, "git_dirty": bool(changes)}
 
 
+def _package_versions() -> dict:
+    """Versions of the libraries that turn text into scores; recorded rather than pinned."""
+    versions = {}
+    for name in ("transformers", "tokenizers", "huggingface-hub", "accelerate", "safetensors"):
+        try:
+            versions[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            versions[name] = None
+    return versions
+
+
 def _environment() -> dict:
     environment = {"python": platform.python_version(), "platform": platform.platform(),
-                   "machine": platform.machine()}
+                   "machine": platform.machine(), "packages": _package_versions()}
     try:
         import torch
     except ImportError:

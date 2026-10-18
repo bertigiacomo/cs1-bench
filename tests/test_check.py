@@ -29,10 +29,16 @@ DECISION = {
     ({"model_type": "sparkx", "architectures": ["SparkXForCausalLM"],
       "auto_map": {"AutoModelForCausalLM": "modeling_sparkx.SparkXForCausalLM"}}, FAIL, "auto_map"),
     ({"model_type": "clm", "architectures": ["CLMForCausalLM"]}, SKIP, "unknown to transformers"),
+    ({"model_type": "mistral3", "architectures": ["Mistral3ForConditionalGeneration"],
+      "text_config": {"model_type": "ministral99"}}, SKIP, "'ministral99' inside 'mistral3'"),
     ({"model_type": "bert", "architectures": ["BertForMaskedLM"]}, SKIP, "does not generate text"),
     (None, SKIP, "no config.json"),
 ])
 def test_classify_checkpoint(config, status, words):
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
+
+    if status == OK and config["model_type"] not in CONFIG_MAPPING_NAMES:
+        pytest.skip(f"the installed transformers does not know {config['model_type']}")
     found, reason = check.classify_checkpoint(config)
     assert found == status and words in reason
 
