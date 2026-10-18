@@ -9,12 +9,13 @@ import os
 import sys
 from pathlib import Path
 
+from . import ui
 from .core import (LETTERS, TEXT_EXTRACTED_MODEL_TYPES, auto_model_class, prompt_condition, resolve_model_source,
                    resolve_revision, supports_system_role, validate_row)
 from .direct import _slot_ids, encode_prompt
 from .runner import _environment, _git_state, resolve_system_roles
+from .ui import FAIL, OK, SKIP, WARN
 
-OK, WARN, FAIL, SKIP = "✓", "!", "✗", "–"
 SEVERITY = {OK: 0, SKIP: 0, WARN: 1, FAIL: 2}
 GENERATIVE_SUFFIXES = ("ForCausalLM", "ForConditionalGeneration")
 WEIGHT_SUFFIXES = {".safetensors", ".bin", ".gguf"}
@@ -63,7 +64,7 @@ class Report:
         self.worst = OK
 
     def __call__(self, status: str, message: str) -> None:
-        print(f"  {status} {message}", file=self.stream, flush=True)
+        print(ui.line(status, message, self.stream), file=self.stream, flush=True)
         if status == SKIP:
             self.worst = SKIP
         elif SEVERITY[status] > SEVERITY[self.worst]:
@@ -195,17 +196,19 @@ def main() -> None:
                 validate_row(row)
             except ValueError as error:
                 parser.error(f"row {row.get('id')!r}: {error}")
-    print("Environment")
+    ui.banner("check", sys.stdout)
+    print("\n" + ui.heading("Environment", sys.stdout))
     environment = Report()
     check_environment(environment)
     outcomes = collections.Counter()
     for folder in folders:
-        print(f"\n{folder.name}")
+        print("\n" + ui.heading(folder.name, sys.stdout))
         report = Report()
         check_model(folder, rows, args.max_tokens, report, args.allow_remote_code)
         outcomes[report.worst] += 1
-    print(f"\nSummary: {outcomes[OK]} ready · {outcomes[WARN]} with warnings · {outcomes[FAIL]} unsupported · "
-          f"{outcomes[SKIP]} not evaluable")
+    counts = [(OK, "ready"), (WARN, "with warnings"), (FAIL, "unsupported"), (SKIP, "not evaluable")]
+    print("\n" + ui.heading("Summary", sys.stdout) + "  " + "  ".join(
+        f"{ui.paint(status, ui.COLORS[status], sys.stdout)} {outcomes[status]} {label}" for status, label in counts))
     if environment.worst == FAIL or outcomes[FAIL]:
         raise SystemExit(1)
 

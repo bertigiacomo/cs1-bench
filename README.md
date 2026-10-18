@@ -146,7 +146,7 @@ With `--input`, it also builds the real prompts of your variants and runs the sa
 
 A few things it does for you:
 
-- **Progress on screen.** Every 10 seconds you get a line on stderr like `[Qwen3.5-4B] 1200/2400 (50%) · 38.2 rows/s · ETA 0:00:31 · errors 0`. It works inside tmux and in a log file (`cs1 run … 2>&1 | tee run.log`). Change the interval with `--progress-every`.
+- **Progress on screen.** In a terminal (tmux too) there's a live bar at the bottom: `▸ 1200/2400 ██████░░░░ 50% · 38.2 rows/s · ETA 00:31 · errors 0`. In a log file (`cs1 run … 2>&1 | tee run.log`) you get a plain line every 10 seconds instead (change it with `--progress-every`), so the log stays readable. Every line starts with a mark (`✓` done, `!` warning, `✗` failed, `·` info), colours only show up in a real terminal, and `NO_COLOR=1` turns them off.
 - **Warm-up.** The first pass on a GPU is always slow (kernels loading, memory allocation), so the first row is run once and thrown away. Change this with `--warmup N`.
 - **Our system prompt, always.** It goes in as a system message. If a model's chat template has no system role, it's put at the top of the user message instead. Each output row says which one happened (`system_role`: `native` or `merge`), and the manifest says whether the model supports a system role.
 - **Remote code, only if you ask.** Some models ship their own Python code. `--allow-remote-code` lets transformers run it (that's its `trust_remote_code`). It's off by default, prints the `.py` files it's about to run, and ends up in the manifest. Read those files first, because they run with your permissions.

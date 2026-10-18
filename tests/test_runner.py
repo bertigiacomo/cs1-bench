@@ -1,4 +1,5 @@
 import argparse
+import io
 import hashlib
 import json
 import sys
@@ -168,14 +169,15 @@ def test_progress_prints_one_line_per_interval_with_rate_and_eta():
     assert lines == []  # Interval not reached yet.
     now[0] = 10
     progress.advance([{}] * 9 + [{"error": "x"}])
-    assert lines[0] == "[Qwen3.5-4B] 20/100 (20%) · 2.0 rows/s · ETA 0:00:40 · errors 1"
+    assert lines[0] == "  ▸ 20/100 (20%) · 2.0 rows/s · ETA 0:00:40 · errors 1"
 
 
 def test_run_reports_progress_on_stderr(tmp_path, backend, capsys):
     rows = [DECISION]
     runner.run(rows, tmp_path / "out", make_args(), write_rows(tmp_path, rows))
     err = capsys.readouterr().err
-    assert "[fake] loading fake" in err and "1/1 (100%)" in err and "done in" in err
+    assert "fake\n  · loading fake (torch, direct)" in err
+    assert "  ▸ 1/1 (100%)" in err and "  ✓ done in" in err
 
 
 def test_system_role_in_the_input_is_ignored_when_the_template_supports_it(tmp_path, backend):
@@ -192,3 +194,22 @@ def test_allowed_remote_code_names_the_files_it_will_run(tmp_path, backend, caps
     rows = [DECISION]
     runner.run(rows, tmp_path / "out", make_args(model=str(model), allow_remote_code=True), write_rows(tmp_path, rows))
     assert "remote code allowed: running configuration_spark.py, modeling_spark.py" in capsys.readouterr().err
+
+
+class Terminal(io.StringIO):
+    def isatty(self):
+        return True
+
+
+def test_terminals_get_a_live_bar_and_a_final_summary_line():
+    stream = Terminal()
+    progress = runner.Progress("Qwen3.5-4B", total=4, every=10, stream=stream)
+    progress.start()
+    assert progress.bar is not None
+    progress.advance([{}, {"error": "x"}])
+    progress.say("note above the bar")
+    progress.advance([{}, {}])
+    progress.finish()
+    output = stream.getvalue()
+    assert progress.bar is None and "note above the bar" in output
+    assert "4/4 (100%)" in output and "errors 1" in output
