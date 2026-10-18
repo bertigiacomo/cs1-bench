@@ -33,5 +33,8 @@ llamacpp = ["llama-cpp-python==0.3.35"]
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+cs1_bench = ["smoke.jsonl"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

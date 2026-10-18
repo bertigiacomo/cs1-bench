@@ -1,4 +1,4 @@
-"""Preflight check without loading weights: environment, then each model's loader, tokenizer, and prompts."""
+"""Preflight in levels: environment; each model's loader, tokenizer and prompts; then a live run on a few rows."""
 
 from __future__ import annotations
 
@@ -6,7 +6,9 @@ import argparse
 import collections
 import json
 import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from . import ui
@@ -16,7 +18,9 @@ from .direct import _slot_ids, encode_prompt
 from .runner import _environment, _git_state, resolve_system_roles
 from .ui import FAIL, OK, SKIP, WARN
 
-SEVERITY = {OK: 0, SKIP: 0, WARN: 1, FAIL: 2}
+SEVERITY = {OK: 0, ui.INFO: 0, SKIP: 0, WARN: 1, FAIL: 2}
+SMOKE = Path(__file__).with_name("smoke.jsonl")  # 4 trivial decisions: en/it × json/text.
+LIVE_ROWS = 3  # Rows of --input scored by the live test.
 GENERATIVE_SUFFIXES = ("ForCausalLM", "ForConditionalGeneration")
 WEIGHT_SUFFIXES = {".safetensors", ".bin", ".gguf"}
 
@@ -164,54 +168,101 @@ def check_model(folder: Path, rows: list[dict], max_tokens: int, report: Report,
                    f"longest prompt {longest} tokens (limit {max_tokens})")
 
 
+def read_rows(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def live_test(folder: Path, rows: list[dict], args: argparse.Namespace, report: Report) -> None:
+    """Score a few rows with the real `cs1 run`: its own process and a temporary folder, nothing kept."""
+    with tempfile.TemporaryDirectory() as temporary:
+        source, output = Path(temporary, "rows.jsonl"), Path(temporary, "run")
+        source.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+        command = [sys.executable, "-m", "cs1_bench", "run", str(source), "--output", str(output),
+                   "--mode", "direct", "--model", str(folder), "--device", args.device,
+                   "--max-tokens", str(args.max_tokens), "--warmup", "0", "--progress-every", "0"]
+        if args.allow_remote_code:
+            command.append("--allow-remote-code")
+        result = subprocess.run(command, capture_output=True, text=True)
+        if not (output / "manifest.json").is_file():
+            last = (result.stderr.strip().splitlines() or ["no output"])[-1]
+            report(FAIL, f"live run did not start: {last}")
+            return
+        manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+        if manifest["status"] != "completed":
+            report(FAIL, f"live run failed: {manifest.get('error')}")
+            return
+        predictions = read_rows(output / "predictions.jsonl")
+    model = manifest["model"]
+    roles = sorted({prediction.get("system_role", "?") for prediction in predictions})
+    report(OK, f"loaded in {manifest['load_seconds']:.1f}s as {model.get('model_class')} on {model.get('device')} "
+               f"· manifest {manifest['status']} · system role {', '.join(roles)}")
+    for prediction in predictions:
+        if "error" in prediction:
+            report(FAIL, f"{prediction['id']}: {prediction['error']}")
+            continue
+        probabilities = prediction["probabilities"]
+        best = max(range(len(probabilities)), key=probabilities.__getitem__)
+        chosen, expected = prediction["option_ids"][best], prediction.get("answer")
+        verdict = "" if expected is None else f"  (expected {expected} {'✓' if chosen == expected else '✗'})"
+        report(ui.INFO, f"{prediction['id']} → {chosen} {probabilities[best]:.2f}{verdict}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("models", nargs="*",
-                        help="Local model folders or names under --models-dir (default: every folder there)")
+                        help="Model folders or names under --models-dir; named models also get a live test")
     parser.add_argument("--models-dir", type=Path, default=os.environ.get("CS1_MODELS_DIR"),
-                        help="Folder holding one subfolder per model (default: $CS1_MODELS_DIR)")
-    parser.add_argument("--input", type=Path, help="Variants JSONL whose real prompts are test-encoded")
+                        help="Folder with one subfolder per model; without named models, all are checked statically")
+    parser.add_argument("--input", type=Path,
+                        help=f"Your variants JSONL: all prompts are test-encoded, the first {LIVE_ROWS} rows scored "
+                             "(default: the built-in 4-row smoke test)")
+    parser.add_argument("--no-load", action="store_true", help="Skip the live test: no weights are loaded")
+    parser.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"), default="auto",
+                        help="Device for the live test (default: auto)")
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--allow-remote-code", action="store_true",
-                        help="Treat models that ship their own code (auto_map) as runnable; the code is listed, "
-                             "not executed")
+                        help="Treat models that ship their own code (auto_map) as runnable: listed statically, "
+                             "executed only by the live test")
     args = parser.parse_args()
     if args.models_dir is not None:
         os.environ["CS1_MODELS_DIR"] = str(args.models_dir)
+    folders = []
     if args.models:
         folders = [Path(resolve_model_source(model)) for model in args.models]
     elif args.models_dir is not None and Path(args.models_dir).expanduser().is_dir():
         folders = sorted(path for path in Path(args.models_dir).expanduser().iterdir()
                          if path.is_dir() and not path.name.startswith("."))
-    else:
-        parser.error("Name the models, or pass --models-dir / set CS1_MODELS_DIR")
     missing = [str(folder) for folder in folders if not folder.is_dir()]
     if missing:
         parser.error(f"Not local model folders: {', '.join(missing)}")
-    rows = []
-    if args.input is not None:
-        rows = [json.loads(line) for line in args.input.read_text(encoding="utf-8").splitlines() if line.strip()]
-        for row in rows:
-            try:
-                validate_row(row)
-            except ValueError as error:
-                parser.error(f"row {row.get('id')!r}: {error}")
+    rows = read_rows(args.input if args.input is not None else SMOKE)
+    for row in rows:
+        try:
+            validate_row(row)
+        except ValueError as error:
+            parser.error(f"row {row.get('id')!r}: {error}")
+    live_rows = rows[:LIVE_ROWS] if args.input is not None else rows
     ui.banner("check", sys.stdout)
     print("\n" + ui.heading("Environment", sys.stdout))
     environment = Report()
     check_environment(environment)
+    if args.input is not None:
+        environment(OK, f"{args.input.name}: {len(rows)} valid rows")
     outcomes = collections.Counter()
     for folder in folders:
         print("\n" + ui.heading(folder.name, sys.stdout))
         report = Report()
         check_model(folder, rows, args.max_tokens, report, args.allow_remote_code)
+        # Only named models are loaded, one process each; models that already failed statically are not.
+        if args.models and not args.no_load and report.worst in {OK, WARN}:
+            live_test(folder, live_rows, args, report)
         outcomes[report.worst] += 1
-    counts = [(OK, "ready"), (WARN, "with warnings"), (FAIL, "unsupported"), (SKIP, "not evaluable")]
-    print("\n" + ui.heading("Summary", sys.stdout) + "  " + "  ".join(
-        f"{ui.paint(status, ui.COLORS[status], sys.stdout)} {outcomes[status]} {label}" for status, label in counts))
+    if folders:
+        counts = [(OK, "ready"), (WARN, "with warnings"), (FAIL, "unsupported"), (SKIP, "not evaluable")]
+        print("\n" + ui.heading("Summary", sys.stdout) + "  " + "  ".join(
+            f"{ui.paint(status, ui.COLORS[status], sys.stdout)} {outcomes[status]} {label}" for status, label in counts))
     if environment.worst == FAIL or outcomes[FAIL]:
         raise SystemExit(1)
-
 
 if __name__ == "__main__":
     main()

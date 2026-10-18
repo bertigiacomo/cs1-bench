@@ -124,20 +124,32 @@ export HF_HUB_OFFLINE=1          # never touch the network at runtime
 
 cs1 import tickets.csv --output data/tickets.jsonl --lang it
 cs1 variants data/tickets.jsonl --output data/tickets-variants.jsonl --langs en,it --rotations cyclic
-cs1 check --input data/tickets-variants.jsonl            # every model in $CS1_MODELS_DIR, no weights loaded
+cs1 check Qwen3.5-4B --input data/tickets-variants.jsonl  # static checks + a 3-row live run
 cs1 run data/tickets-variants.jsonl --mode direct --model Qwen3.5-4B --output runs/qwen3.5-4b/
 ```
 
 **Revisions.** For a local folder, `--revision` is optional. CS1-Bench reads the commit from the `.cache/huggingface/download/*.metadata` files that `hf download --local-dir` leaves behind, and they all have to agree. If those files aren't there, it looks for a `REVISION` file with the hash in the model folder. If it can't find either, it stops and asks for `--revision`. The manifest records where the revision came from (`revision_source`). Hugging Face IDs like `Qwen/Qwen3.5-4B` still need `--revision`.
 
-**`cs1 check`** looks at each model without loading its weights, so it only takes a few seconds per model. For each one it reports:
+**`cs1 check`** works in levels. You get as much as you ask for:
+
+```bash
+cs1 check                                  # environment, plus a static look at every model in $CS1_MODELS_DIR
+cs1 check Qwen3.5-4B                       # + loads that model and runs the built-in 4-row smoke test
+cs1 check Qwen3.5-4B --input mine.jsonl    # + checks your file and scores its first 3 rows
+cs1 check Qwen3.5-4B --no-load             # static checks only, no weights
+```
+
+The **static checks** take a few seconds per model and never load weights:
 
 - the revision it found;
-- whether the loader can handle the model as it is (multimodal checkpoints other than Qwen3.5, or anything that needs `trust_remote_code`, get a ✗);
+- whether the loader can handle the model;
 - weight size, and whether the chat template has a system role;
-- whether `A`, `B`, `C`… are single tokens.
+- whether `A`, `B`, `C`… are single tokens;
+- whether every prompt (your file's, or the smoke test's) encodes cleanly.
 
-With `--input`, it also builds the real prompts of your variants and runs the same tokenization checks as `cs1 run`. Checkpoints that aren't generative language models are marked `–` (not evaluable) instead of failing. Models that ship their own code (`auto_map` in the config) are ✗ unless you pass `--allow-remote-code`. Then they become `!` and the check lists their `.py` files, without running them. The exit code is 1 if anything is ✗.
+The **live test** runs the real `cs1 run` on those few rows, in its own process and a temporary folder, so nothing ends up in `runs/`. It shows load time, the class that was loaded, and each row's pick with its probability and the expected answer. Wrong answers are just information. Only things that break (a failed load, a row error, a manifest that isn't `completed`) count as ✗. The smoke test is four trivial decisions, one for each language and format (`src/cs1_bench/smoke.jsonl`).
+
+Checkpoints that aren't generative language models are marked `–` (not evaluable). Models that ship their own code (`auto_map`) are ✗ unless you pass `--allow-remote-code`: then the static check lists their `.py` files without running them, and only the live test executes them. The exit code is 1 if anything is ✗.
 
 `cs1 run` loads the model once, scores every row and creates a new folder with two files:
 
