@@ -54,10 +54,11 @@ def backend(monkeypatch):
     return calls
 
 
-def make_args(mode="direct", warmup=0):
-    return argparse.Namespace(mode=mode, backend="torch", model="fake", revision="a" * 40, max_tokens=128,
-                              warmup=warmup, progress_every=0, revision_source="argument", device="cpu",
-                              dtype="float32", gguf=None, llama_threads=None)
+def make_args(mode="direct", warmup=0, model="fake", allow_remote_code=False):
+    return argparse.Namespace(mode=mode, backend="torch", model=model, revision="a" * 40, max_tokens=128,
+                              warmup=warmup, progress_every=0, revision_source="argument",
+                              allow_remote_code=allow_remote_code, device="cpu", dtype="float32", gguf=None,
+                              llama_threads=None)
 
 
 def write_rows(tmp_path, rows):
@@ -181,3 +182,13 @@ def test_system_role_in_the_input_is_ignored_when_the_template_supports_it(tmp_p
     rows = [dict(DECISION, id="old", system_role="merge")]  # e.g. from an older variants file
     runner.run(rows, tmp_path / "out", make_args(), write_rows(tmp_path, rows))
     assert backend.direct[0]["system_role"] == "native"
+
+
+def test_allowed_remote_code_names_the_files_it_will_run(tmp_path, backend, capsys):
+    model = tmp_path / "Spark-X2.5-4B"
+    model.mkdir()
+    (model / "modeling_spark.py").write_text("")
+    (model / "configuration_spark.py").write_text("")
+    rows = [DECISION]
+    runner.run(rows, tmp_path / "out", make_args(model=str(model), allow_remote_code=True), write_rows(tmp_path, rows))
+    assert "remote code allowed: running configuration_spark.py, modeling_spark.py" in capsys.readouterr().err

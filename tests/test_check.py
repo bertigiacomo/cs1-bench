@@ -86,3 +86,13 @@ def test_check_exits_nonzero_when_a_model_is_unsupported(tmp_path, monkeypatch, 
         run_main(monkeypatch, str(tmp_path / "Spark-X2.5-4B"))
     assert error.value.code == 1
     assert "✗ requires remote code (auto_map" in capsys.readouterr().out
+
+
+def test_allow_remote_code_turns_auto_map_into_a_listed_warning(tmp_path, monkeypatch, capsys):
+    folder = make_model(tmp_path, "Spark-X2.5-4B", {"model_type": "sparkx", "architectures": ["SparkXForCausalLM"],
+                                                    "auto_map": {"AutoModelForCausalLM": "modeling_spark.SparkX"}})
+    (folder / "modeling_spark.py").write_text("x" * 2048)
+    run_main(monkeypatch, "--allow-remote-code", str(folder))  # No SystemExit: warnings are not failures.
+    out = capsys.readouterr().out
+    assert "! remote code allowed (auto_map" in out
+    assert "! code that would run: modeling_spark.py (2 KiB)" in out

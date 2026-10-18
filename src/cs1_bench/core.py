@@ -253,7 +253,8 @@ def auto_model_class(model_type: str) -> tuple[str, str] | None:
     return None
 
 
-def load_causal_model(source: str, revision: str, device: str = "auto", dtype: str = "bfloat16"):
+def load_causal_model(source: str, revision: str, device: str = "auto", dtype: str = "bfloat16",
+                      trust_remote_code: bool = False):
     """Load one pinned causal model on the resolved Torch device."""
     import torch
     import transformers
@@ -266,7 +267,8 @@ def load_causal_model(source: str, revision: str, device: str = "auto", dtype: s
     target = resolve_device(device)
     if dtype not in {"bfloat16", "float16", "float32"}:
         raise ValueError("Dtype must be bfloat16, float16, or float32")
-    common = {"revision": None if local else revision, "local_files_only": local, "trust_remote_code": False}
+    common = {"revision": None if local else revision, "local_files_only": local,
+              "trust_remote_code": trust_remote_code}
     config = transformers.AutoConfig.from_pretrained(source, **common)
     tokenizer = transformers.AutoTokenizer.from_pretrained(source, **common)
     # Unknown types keep AutoModelForCausalLM, whose error names the unsupported configuration.
@@ -294,6 +296,7 @@ def load_causal_model(source: str, revision: str, device: str = "auto", dtype: s
         "dtype": dtype,
         "device": str(target),
         "model_class": type(model).__name__,
+        "trust_remote_code": trust_remote_code,
         "torch_version": torch.__version__,
         "transformers_version": transformers.__version__,
     }

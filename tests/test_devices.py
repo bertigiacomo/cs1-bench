@@ -117,3 +117,19 @@ def test_auto_model_class_prefers_causal_lms_then_multimodal_models():
     assert auto_model_class("qwen3") == ("AutoModelForCausalLM", "Qwen3ForCausalLM")
     assert auto_model_class("mistral3") == ("AutoModelForImageTextToText", "Mistral3ForConditionalGeneration")
     assert auto_model_class("not-a-model") is None
+
+
+def test_remote_code_flag_reaches_config_tokenizer_model_and_metadata(torch_stub, monkeypatch):
+    calls = [Mock(return_value=SimpleNamespace(model_type="sparkx")), Mock(return_value=object()),
+             Mock(return_value=(Mock(), {}))]
+    transformers = SimpleNamespace(
+        AutoConfig=SimpleNamespace(from_pretrained=calls[0]), AutoTokenizer=SimpleNamespace(from_pretrained=calls[1]),
+        AutoModelForCausalLM=SimpleNamespace(from_pretrained=calls[2]), __version__="test",
+    )
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    monkeypatch.setattr(core, "auto_model_class", lambda model_type: None)  # Custom type: only auto_map knows it.
+    torch_stub.float32 = "float32"
+    torch_stub.__version__ = "test"
+    _, _, metadata = load_causal_model("test/model", "a" * 40, "cpu", "float32", trust_remote_code=True)
+    assert all(call.call_args.kwargs["trust_remote_code"] is True for call in calls)
+    assert metadata["trust_remote_code"] is True

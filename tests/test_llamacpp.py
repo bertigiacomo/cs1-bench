@@ -16,6 +16,7 @@ from cs1_bench.cli import main
     (["--mode", "reranker", "--backend", "llamacpp", "--gguf", "x.gguf"], "reranker requires torch"),
     (["--mode", "direct", "--backend", "llamacpp"], "requires --gguf"),
     (["--mode", "direct", "--backend", "llamacpp", "--gguf", "missing.gguf"], "requires --gguf"),
+    (["--mode", "direct", "--backend", "llamacpp", "--allow-remote-code"], "--backend torch only"),
 ])
 def test_invalid_llamacpp_combinations_fail_before_loading(tmp_path, monkeypatch, capsys, extra, message):
     monkeypatch.setattr(sys, "argv", ["cs1-score", "--model", "unused", "--revision", "unused",

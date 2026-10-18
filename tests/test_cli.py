@@ -71,7 +71,8 @@ def test_torch_routes_to_matching_scorer(run_cli, backends, mode):
 @pytest.mark.parametrize("flags", [[], ["--device", "auto"], ["--device", "cuda"]])
 def test_torch_reranker_always_loads_cuda(run_cli, backends, flags):
     run_cli.run("reranker", *flags)
-    backends.torch.load_causal_model.assert_called_once_with("test/model", "a" * 40, "cuda", "bfloat16")
+    backends.torch.load_causal_model.assert_called_once_with("test/model", "a" * 40, "cuda", "bfloat16",
+                                                             trust_remote_code=False)
     model, tokenizer, metadata = backends.loaded
     assert backends.torch.reranker_score.call_args_list == [
         call(model, tokenizer, row, metadata, 128) for row in run_cli.rows
@@ -92,7 +93,12 @@ def test_torch_reranker_rejects_non_cuda_device_before_loading(run_cli, backends
 def test_torch_cpu_selection_reaches_loader(run_cli, backends):
     run_cli.run("direct", "--device", "cpu", "--dtype", "float32")
     backends.torch.load_causal_model.assert_called_once_with(
-        "test/model", "a" * 40, "cpu", "float32")
+        "test/model", "a" * 40, "cpu", "float32", trust_remote_code=False)
+
+
+def test_allow_remote_code_reaches_loader(run_cli, backends):
+    run_cli.run("direct", "--device", "cpu", "--allow-remote-code")
+    assert backends.torch.load_causal_model.call_args.kwargs == {"trust_remote_code": True}
 
 
 def test_existing_output_is_not_overwritten(run_cli, backends, capsys):

@@ -20,7 +20,7 @@ GENERATIVE_SUFFIXES = ("ForCausalLM", "ForConditionalGeneration")
 WEIGHT_SUFFIXES = {".safetensors", ".bin", ".gguf"}
 
 
-def classify_checkpoint(config: dict | None) -> tuple[str, str]:
+def classify_checkpoint(config: dict | None, allow_remote_code: bool = False) -> tuple[str, str]:
     """Say from the raw config.json whether load_causal_model can load the checkpoint as it is."""
     from transformers import __version__ as transformers_version
     from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
@@ -32,7 +32,10 @@ def classify_checkpoint(config: dict | None) -> tuple[str, str]:
     if architectures and not any(name.endswith(GENERATIVE_SUFFIXES) for name in architectures):
         return SKIP, f"not evaluable with this engine: {', '.join(architectures)} does not generate text"
     if "auto_map" in config:
-        return FAIL, f"requires remote code (auto_map in config, model_type {model_type!r}); trust_remote_code is off"
+        if allow_remote_code:
+            return WARN, f"remote code allowed (auto_map, model_type {model_type!r}): read the model's .py files first"
+        return FAIL, (f"requires remote code (auto_map in config, model_type {model_type!r}); "
+                      "pass --allow-remote-code after reading its .py files")
     if model_type not in CONFIG_MAPPING_NAMES:
         return FAIL, (f"requires remote code (model_type {model_type!r} unknown to transformers "
                       f"{transformers_version}); trust_remote_code is off")
@@ -99,10 +102,11 @@ def _condition_label(row: dict) -> str:
     return f"{condition['prompt_lang']}.{condition['prompt_format']}.{condition['system_role']}"
 
 
-def check_model(folder: Path, rows: list[dict], max_tokens: int, report: Report) -> None:
+def check_model(folder: Path, rows: list[dict], max_tokens: int, report: Report,
+                allow_remote_code: bool = False) -> None:
     config_path = folder / "config.json"
     config = json.loads(config_path.read_text(encoding="utf-8")) if config_path.is_file() else None
-    status, reason = classify_checkpoint(config)
+    status, reason = classify_checkpoint(config, allow_remote_code)
     if status == SKIP:
         report(SKIP, reason)
         return
@@ -112,6 +116,10 @@ def check_model(folder: Path, rows: list[dict], max_tokens: int, report: Report)
     except ValueError as error:
         report(FAIL, str(error))
     report(status, reason)
+    if "auto_map" in config:
+        # Listed, never imported: the static check does not execute remote code.
+        files = sorted(f"{path.name} ({path.stat().st_size / 1024:.0f} KiB)" for path in folder.glob("*.py"))
+        report(WARN if allow_remote_code else FAIL, f"code that would run: {', '.join(files) or 'none found'}")
     size = sum(path.stat().st_size for path in folder.rglob("*")
                if path.suffix in WEIGHT_SUFFIXES and ".cache" not in path.parts)
     if config.get("quantization_config") or (folder / "hf_quant_config.json").is_file():
@@ -163,6 +171,9 @@ def main() -> None:
                         help="Folder holding one subfolder per model (default: $CS1_MODELS_DIR)")
     parser.add_argument("--input", type=Path, help="Variants JSONL whose real prompts are test-encoded")
     parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument("--allow-remote-code", action="store_true",
+                        help="Treat models that ship their own code (auto_map) as runnable; the code is listed, "
+                             "not executed")
     args = parser.parse_args()
     if args.models_dir is not None:
         os.environ["CS1_MODELS_DIR"] = str(args.models_dir)
@@ -191,7 +202,7 @@ def main() -> None:
     for folder in folders:
         print(f"\n{folder.name}")
         report = Report()
-        check_model(folder, rows, args.max_tokens, report)
+        check_model(folder, rows, args.max_tokens, report, args.allow_remote_code)
         outcomes[report.worst] += 1
     print(f"\nSummary: {outcomes[OK]} ready · {outcomes[WARN]} with warnings · {outcomes[FAIL]} unsupported · "
           f"{outcomes[SKIP]} not evaluable")

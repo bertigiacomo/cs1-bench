@@ -137,7 +137,7 @@ cs1 run data/tickets-variants.jsonl --mode direct --model Qwen3.5-4B --output ru
 - weight size, and whether the chat template has a system role;
 - whether `A`, `B`, `C`… are single tokens.
 
-With `--input`, it also builds the real prompts of your variants and runs the same tokenization checks as `cs1 run`. Checkpoints that aren't generative language models are marked `–` (not evaluable) instead of failing. The exit code is 1 if anything is ✗.
+With `--input`, it also builds the real prompts of your variants and runs the same tokenization checks as `cs1 run`. Checkpoints that aren't generative language models are marked `–` (not evaluable) instead of failing. Models that ship their own code (`auto_map` in the config) are ✗ unless you pass `--allow-remote-code`. Then they become `!` and the check lists their `.py` files, without running them. The exit code is 1 if anything is ✗.
 
 `cs1 run` loads the model once, scores every row and creates a new folder with two files:
 
@@ -149,6 +149,7 @@ A few things it does for you:
 - **Progress on screen.** Every 10 seconds you get a line on stderr like `[Qwen3.5-4B] 1200/2400 (50%) · 38.2 rows/s · ETA 0:00:31 · errors 0`. It works inside tmux and in a log file (`cs1 run … 2>&1 | tee run.log`). Change the interval with `--progress-every`.
 - **Warm-up.** The first pass on a GPU is always slow (kernels loading, memory allocation), so the first row is run once and thrown away. Change this with `--warmup N`.
 - **Our system prompt, always.** It goes in as a system message. If a model's chat template has no system role, it's put at the top of the user message instead. Each output row says which one happened (`system_role`: `native` or `merge`), and the manifest says whether the model supports a system role.
+- **Remote code, only if you ask.** Some models ship their own Python code. `--allow-remote-code` lets transformers run it (that's its `trust_remote_code`). It's off by default, prints the `.py` files it's about to run, and ends up in the manifest. Read those files first, because they run with your permissions.
 - **Per-row errors.** If a row can't be scored (for example, the tokenizer splits `A` into two tokens), it gets an `error` field and the run keeps going.
 - **A manifest even on a crash**, with `"status": "failed"` and the error message. It also records the GPU's name, compute capability, and memory.
 

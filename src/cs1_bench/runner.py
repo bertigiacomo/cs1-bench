@@ -164,6 +164,9 @@ def run(rows: list[dict], output_dir: Path, args: argparse.Namespace, input_path
     progress = Progress(Path(args.model).name or args.model, len(rows), args.progress_every)
     try:
         progress.say(f"loading {args.model} ({args.backend}, {args.mode})")
+        if args.allow_remote_code:
+            files = ", ".join(sorted(path.name for path in Path(args.model).glob("*.py"))) or "no local .py files"
+            progress.say(f"remote code allowed: running {files}")
         model, tokenizer, metadata, scorers = load_backend(args)
         manifest["model"] = {**metadata, "revision_source": args.revision_source}
         manifest["load_seconds"] = time.perf_counter() - started

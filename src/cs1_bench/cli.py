@@ -32,6 +32,9 @@ def add_model_arguments(parser: argparse.ArgumentParser) -> None:
                         help="Torch device (auto prefers CUDA, then Apple MPS; CPU must be explicit)")
     parser.add_argument("--dtype", choices=("bfloat16", "float16", "float32"), default="bfloat16",
                         help="Model precision; changing it can change option scores")
+    parser.add_argument("--allow-remote-code", action="store_true",
+                        help="Run the Python code shipped in the model folder (transformers trust_remote_code); "
+                             "read those .py files first")
 
 
 def check_model_arguments(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
@@ -51,6 +54,8 @@ def check_model_arguments(parser: argparse.ArgumentParser, args: argparse.Namesp
         if args.llama_threads < 1:
             parser.error("--llama-threads must be positive")
     if args.backend == "llamacpp":
+        if args.allow_remote_code:
+            parser.error("--allow-remote-code applies to --backend torch only")
         if args.mode == "reranker":
             parser.error("llama.cpp supports direct, serial, and shared modes; reranker requires torch")
         if args.gguf is None or not args.gguf.is_file():
@@ -73,7 +78,8 @@ def load_backend(args: argparse.Namespace):
         scorers = SimpleNamespace(direct=llamacpp_backend.score, serial=llamacpp_backend.SerialPrefixScorer,
                                   shared=llamacpp_backend.score_shared, reranker=None)
     else:
-        model, tokenizer, metadata = load_causal_model(args.model, args.revision, args.device, args.dtype)
+        model, tokenizer, metadata = load_causal_model(args.model, args.revision, args.device, args.dtype,
+                                                       trust_remote_code=args.allow_remote_code)
         scorers = SimpleNamespace(direct=direct_score, serial=SerialPrefixScorer,
                                   shared=score_shared, reranker=reranker_score)
     return model, tokenizer, metadata, scorers
