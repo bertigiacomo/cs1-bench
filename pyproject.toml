@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cs1-bench"
-version = "0.1.0"
+version = "0.1.1"
 description = "Classification System One Benchmark: LLMs on typed, Jev-style semantic decisions"
 readme = "README.md"
 license = {file = "LICENSE"}
