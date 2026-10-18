@@ -120,7 +120,7 @@ def fake_cs1_run(status="completed", error=None, calls=None):
         if "cs1_bench" not in command:
             return REAL_RUN(command, **kwargs)
         if calls is not None:
-            calls.append(command)
+            calls.append((command, kwargs))
         source = Path(command[command.index("run") + 1])
         output = Path(command[command.index("--output") + 1])
         output.mkdir()
@@ -147,7 +147,10 @@ def test_named_model_without_input_runs_the_built_in_smoke_test(tmp_path, monkey
     assert "✓ loaded in 1.5s as Qwen3ForCausalLM on cuda:0 · manifest completed · system role native" in out
     assert "smoke-en-json → yes 0.90  (expected yes ✓)" in out
     assert "smoke-it-json → si 0.90  (expected no ✗)" in out  # Wrong answers inform, they do not fail.
-    assert calls[0][calls[0].index("--model") + 1] == str(folder)
+    command, kwargs = calls[0]
+    assert command[command.index("--model") + 1] == str(folder)
+    assert "live test: loading weights and scoring 4 rows" in out
+    assert kwargs["env"]["CS1_NESTED"] == "1" and "stderr" not in kwargs and "capture_output" not in kwargs
 
 
 def test_input_rows_are_all_encoded_but_only_the_first_three_are_scored(tmp_path, monkeypatch, capsys):
@@ -160,7 +163,7 @@ def test_input_rows_are_all_encoded_but_only_the_first_three_are_scored(tmp_path
     out = capsys.readouterr().out
     assert "mine.jsonl: 5 valid rows" in out and "all 5 rows encode" in out
     assert "d2 → account" in out and "d3 →" not in out
-    assert "--allow-remote-code" in calls[0]
+    assert "--allow-remote-code" in calls[0][0]
 
 
 def test_a_failed_live_run_fails_the_check(tmp_path, monkeypatch, capsys):

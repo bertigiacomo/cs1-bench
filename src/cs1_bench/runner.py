@@ -7,6 +7,7 @@ import collections
 import datetime
 import hashlib
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -19,6 +20,8 @@ from .conditions import VARIANT_FIELDS
 from .core import prompt_condition, supports_system_role, validate_row
 
 MANIFEST_SCHEMA = "cs1-bench-run-v1"
+# Set by cs1 check for its live run: skip the banner and model heading that check has already printed.
+NESTED = "CS1_NESTED"
 # Copied from each input row into its prediction, so the predictions file is self-contained.
 CARRIED_FIELDS = (*VARIANT_FIELDS, "answer", "lang", "group_id")
 # The reranker builds its own prompt, so prompt conditions do not apply to it.
@@ -198,7 +201,8 @@ def run(rows: list[dict], output_dir: Path, args: argparse.Namespace, input_path
     started = time.perf_counter()
     progress = Progress(Path(args.model).name or args.model, len(rows), args.progress_every)
     try:
-        progress.heading()
+        if not os.environ.get(NESTED):
+            progress.heading()
         progress.say(f"loading {args.model} ({args.backend}, {args.mode})")
         if args.allow_remote_code:
             files = ", ".join(sorted(path.name for path in Path(args.model).glob("*.py"))) or "no local .py files"
@@ -278,7 +282,8 @@ def main() -> None:
             parser.error(f"row {row.get('id')!r}: {error}")
     if len({row["id"] for row in rows}) != len(rows):
         parser.error("Row IDs must be unique")
-    ui.banner("run")
+    if not os.environ.get(NESTED):
+        ui.banner("run")
     manifest = run(rows, args.output, args, args.input)
     print(f"{manifest['rows_scored']} scored, {manifest['rows_failed']} failed -> {args.output}")
     if manifest["rows_failed"]:

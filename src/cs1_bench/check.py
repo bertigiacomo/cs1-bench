@@ -15,7 +15,7 @@ from . import ui
 from .core import (LETTERS, TEXT_EXTRACTED_MODEL_TYPES, auto_model_class, prompt_condition, resolve_model_source,
                    resolve_revision, supports_system_role, validate_row)
 from .direct import _slot_ids, encode_prompt
-from .runner import _environment, _git_state, resolve_system_roles
+from .runner import NESTED, _environment, _git_state, resolve_system_roles
 from .ui import FAIL, OK, SKIP, WARN
 
 SEVERITY = {OK: 0, ui.INFO: 0, SKIP: 0, WARN: 1, FAIL: 2}
@@ -182,10 +182,12 @@ def live_test(folder: Path, rows: list[dict], args: argparse.Namespace, report: 
                    "--max-tokens", str(args.max_tokens), "--warmup", "0", "--progress-every", "0"]
         if args.allow_remote_code:
             command.append("--allow-remote-code")
-        result = subprocess.run(command, capture_output=True, text=True)
+        report(ui.INFO, f"live test: loading weights and scoring {len(rows)} rows with cs1 run (can take a minute)")
+        # stderr is not captured: transformers' messages and cs1 run's progress (live bar on a terminal) show up
+        # as they happen. stdout only repeats the summary below, so it is dropped.
+        subprocess.run(command, stdout=subprocess.DEVNULL, env={**os.environ, NESTED: "1"})
         if not (output / "manifest.json").is_file():
-            last = (result.stderr.strip().splitlines() or ["no output"])[-1]
-            report(FAIL, f"live run did not start: {last}")
+            report(FAIL, "live run did not start: see its messages above")
             return
         manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
         if manifest["status"] != "completed":

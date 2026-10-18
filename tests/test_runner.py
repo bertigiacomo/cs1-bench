@@ -213,3 +213,11 @@ def test_terminals_get_a_live_bar_and_a_final_summary_line():
     output = stream.getvalue()
     assert progress.bar is None and "note above the bar" in output
     assert "4/4 (100%)" in output and "errors 1" in output
+
+
+def test_nested_runs_skip_the_heading_that_check_already_printed(tmp_path, backend, capsys, monkeypatch):
+    monkeypatch.setenv("CS1_NESTED", "1")
+    rows = [DECISION]
+    runner.run(rows, tmp_path / "out", make_args(), write_rows(tmp_path, rows))
+    err = capsys.readouterr().err
+    assert err.startswith("  · loading fake")
