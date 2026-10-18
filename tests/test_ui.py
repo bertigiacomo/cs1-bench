@@ -1,4 +1,5 @@
 import io
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -19,11 +20,48 @@ def test_colour_only_on_terminals_and_never_with_no_color(monkeypatch):
     assert ui.line(ui.OK, "loaded", Terminal()) == "  ✓ loaded"
 
 
-def test_banner_spells_the_name_and_version():
+def test_banner_is_one_line_with_the_version():
     stream = io.StringIO()
-    ui.banner("check", stream)
-    lines = stream.getvalue().splitlines()
-    assert len(lines) == 3 and lines[2].endswith(f"v{ui.__version__} · check")
+    ui.banner(stream)
+    assert stream.getvalue() == f"====== CS1-BENCH v{ui.__version__} ======\n"
+
+
+MANIFEST = {"status": "completed", "backend": "torch", "model": {"model_class": "Mistral3ForConditionalGeneration",
+            "device": "cuda:0"}, "load_seconds": 53.2, "scoring_seconds": 0.9, "rows_scored": 3, "rows_failed": 1,
+            "wall_seconds": 54.4, "system_role_supported": True}
+
+
+def test_summary_lines_come_from_the_manifest():
+    assert ui.loaded(MANIFEST) == "loaded Mistral3ForConditionalGeneration in 53.2s on cuda:0"
+    assert ui.scored(MANIFEST) == "scored 4 rows in 0.9s (4.4 rows/s), 1 error, system role native"
+    assert ui.scored({**MANIFEST, "system_role_supported": None}).endswith("1 error")  # Reranker: no role.
+    assert ui.finished(54.4, "runs/x", 1) == "done in 0:00:54, runs/x (failed rows have an 'error' field in predictions.jsonl)"
+
+
+def test_report_run_summarises_a_finished_child_run(tmp_path):
+    stream = io.StringIO()
+    ui.report_run(tmp_path, stream)
+    assert "✗ run did not start" in stream.getvalue()
+    (tmp_path / "manifest.json").write_text(json.dumps(MANIFEST))
+    stream = io.StringIO()
+    ui.report_run(tmp_path, stream)
+    assert stream.getvalue().splitlines() == [
+        "  ✓ " + ui.loaded(MANIFEST), "  ! " + ui.scored(MANIFEST), "  ! " + ui.finished(54.4, tmp_path, 1)]
+
+
+def test_follow_hides_progress_keeps_the_rest_and_returns_the_exit_code(monkeypatch):
+    lines = ["  · loading weights (torch, direct)\n", "Loading weights:  50%|█████     | 1/2\n",
+             "[transformers] a warning\n", "  ✗ FAILED: boom\n"]
+    started = []
+
+    def popen(command, **kwargs):
+        started.append(kwargs["env"]["CS1_NESTED"])
+        return SimpleNamespace(stderr=iter(lines), wait=lambda: 1, returncode=1)
+
+    monkeypatch.setattr(ui.subprocess, "Popen", popen)
+    stream = io.StringIO()  # Not a terminal: progress is dropped, kept lines are printed.
+    assert ui.follow(["cs1", "run"], stream) == 1
+    assert stream.getvalue() == "[transformers] a warning\n  ✗ FAILED: boom\n" and started == ["1"]
 
 
 @pytest.mark.parametrize("line,progress", [

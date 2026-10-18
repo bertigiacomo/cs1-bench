@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import argparse
 import collections
-import datetime
 import json
 import os
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -16,7 +14,7 @@ from . import ui
 from .core import (LETTERS, TEXT_EXTRACTED_MODEL_TYPES, auto_model_class, prompt_condition, resolve_model_source,
                    resolve_revision, supports_system_role, validate_row)
 from .direct import _slot_ids, encode_prompt
-from .runner import NESTED, _environment, _git_state, errors, resolve_system_roles
+from .runner import _environment, _git_state, resolve_system_roles
 from .ui import FAIL, OK, SKIP, WARN
 
 SEVERITY = {OK: 0, ui.INFO: 0, SKIP: 0, WARN: 1, FAIL: 2}
@@ -181,23 +179,11 @@ def live_test(folder: Path, rows: list[dict], label: str, args: argparse.Namespa
         source.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
         command = [sys.executable, "-m", "cs1_bench", "run", str(source), "--output", str(output),
                    "--mode", "direct", "--model", str(folder), "--device", args.device,
-                   "--max-tokens", str(args.max_tokens), "--warmup", "0", "--progress-every", "1"]
+                   "--max-tokens", str(args.max_tokens), "--warmup", "0"]
         if args.allow_remote_code:
             command.append("--allow-remote-code")
-        status = ui.StatusLine(report.stream)
-        status.show(f"  {ui.INFO} {label}: loading weights and scoring {len(rows)} rows with cs1 run")
-        # Text mode reads tqdm's carriage-return updates as separate lines; stdout only repeats the summary.
-        process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-                                   env={**os.environ, NESTED: "1"})
-        for line in process.stderr:
-            line = line.rstrip("\n")
-            if ui.is_progress(line):
-                status.show(line)
-            else:
-                status.clear()
-                print(line, file=report.stream, flush=True)
-        process.wait()
-        status.clear()
+        ui.follow(command, report.stream, first=f"  {ui.INFO} {label}: loading weights and scoring "
+                                                f"{ui.plural(len(rows), 'row')}")
         if not (output / "manifest.json").is_file():
             report(FAIL, "live run did not start: see its messages above")
             return
@@ -206,18 +192,16 @@ def live_test(folder: Path, rows: list[dict], label: str, args: argparse.Namespa
             report(FAIL, f"live run failed: {manifest.get('error')}")
             return
         predictions = read_rows(output / "predictions.jsonl")
-    model, failed = manifest["model"], manifest["rows_failed"]
-    roles = ", ".join(sorted({prediction.get("system_role", "?") for prediction in predictions}))
-    rate = manifest["rows_scored"] / manifest["scoring_seconds"] if manifest["scoring_seconds"] else 0.0
-    report(OK, f"loaded {model.get('model_class')} in {ui.duration(manifest['load_seconds'])} on {model.get('device')}")
-    first_error = next((f": {p['error']}" for p in predictions if "error" in p), "")
-    scored = f"scored {ui.plural(len(predictions), 'row')} in {ui.duration(manifest['scoring_seconds'])}"
-    report(FAIL if failed else OK, f"{scored} ({rate:.1f} rows/s), {errors(failed)}, system role {roles}{first_error}")
+    failed = manifest["rows_failed"]
+    report(OK, ui.loaded(manifest))
+    report(FAIL if failed else OK, ui.scored(manifest))
+    if failed:
+        report(FAIL, "first error: " + next(p["error"] for p in predictions if "error" in p))
     answered = [p for p in predictions if "error" not in p and p.get("answer") is not None]
     correct = sum(p["option_ids"][max(range(len(p["probabilities"])), key=p["probabilities"].__getitem__)]
                   == p["answer"] for p in answered)
     expected = f": {correct}/{len(answered)} as expected" if answered else ""
-    report(OK, f"{label} done in {datetime.timedelta(seconds=round(manifest['wall_seconds']))}{expected}")
+    report(OK, f"{label} done in {ui.clock(manifest['wall_seconds'])}{expected}")
 
 
 def main() -> None:
@@ -256,15 +240,16 @@ def main() -> None:
             parser.error(f"row {row.get('id')!r}: {error}")
     live_rows = rows[:LIVE_ROWS] if args.input is not None else rows
     live_label = f"first {len(live_rows)} rows of {args.input.name}" if args.input is not None else "smoke test"
-    ui.banner("check", sys.stdout)
-    print("\n" + ui.heading("Environment", sys.stdout))
+    ui.banner(sys.stdout)
+    ui.title("Environment", sys.stdout)
     environment = Report()
     check_environment(environment)
     if args.input is not None:
         environment(OK, f"{args.input.name}: {len(rows)} valid rows")
     outcomes = collections.Counter()
     for folder in folders:
-        print("\n" + ui.heading(folder.name, sys.stdout))
+        print()
+        ui.title(f"Checking {folder.name}", sys.stdout)
         report = Report()
         check_model(folder, rows, args.max_tokens, report, args.allow_remote_code)
         # Only named models are loaded, one process each; models that already failed statically are not.
@@ -273,7 +258,7 @@ def main() -> None:
         outcomes[report.worst] += 1
     if folders:
         counts = [(OK, "ready"), (WARN, "with warnings"), (FAIL, "unsupported"), (SKIP, "not evaluable")]
-        print("\n" + ui.heading("Summary", sys.stdout) + "  " + "  ".join(
+        print("\n" + ui.heading("Summary:", sys.stdout) + " " + ", ".join(
             f"{ui.paint(status, ui.COLORS[status], sys.stdout)} {outcomes[status]} {label}" for status, label in counts))
     if environment.worst == FAIL or outcomes[FAIL]:
         raise SystemExit(1)

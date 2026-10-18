@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cs1_bench import runner
+from cs1_bench import runner, ui
 from cs1_bench.conditions import expand
 
 DECISION = {
@@ -162,8 +162,8 @@ def test_cli_refuses_an_existing_output_directory(tmp_path, monkeypatch, capsys)
 def test_progress_prints_one_line_per_interval_with_rate_and_eta():
     now = [0.0]
     lines = []
-    progress = runner.Progress("Qwen3.5-4B", total=100, every=10, clock=lambda: now[0],
-                               stream=SimpleNamespace(write=lines.append, flush=lambda: None))
+    progress = ui.Progress(total=100, every=10, clock=lambda: now[0],
+                           stream=SimpleNamespace(write=lines.append, flush=lambda: None))
     now[0] = 5
     progress.advance([{}] * 10)
     assert lines == []  # Interval not reached yet.
@@ -176,7 +176,7 @@ def test_run_reports_progress_on_stderr(tmp_path, backend, capsys):
     rows = [DECISION]
     runner.run(rows, tmp_path / "out", make_args(), write_rows(tmp_path, rows))
     err = capsys.readouterr().err
-    assert "fake\n  · loading weights (torch, direct)" in err
+    assert err.startswith("  · loading weights (torch, direct)")  # Banner and title come from main().
     assert "  ✓ scored 1 row in" in err and "0 errors" in err and "  ✓ done in" in err
 
 
@@ -203,7 +203,7 @@ class Terminal(io.StringIO):
 
 def test_terminals_get_a_live_bar_and_a_final_summary_line():
     stream = Terminal()
-    progress = runner.Progress("Qwen3.5-4B", total=4, every=10, stream=stream)
+    progress = ui.Progress(total=4, every=10, stream=stream)
     progress.start()
     assert progress.bar is not None
     progress.advance([{}, {"error": "x"}])
@@ -212,12 +212,41 @@ def test_terminals_get_a_live_bar_and_a_final_summary_line():
     progress.close()
     output = stream.getvalue()
     assert progress.bar is None and "note above the bar" in output
-    assert progress.failed == 1 and output.endswith("\r\033[2K")  # Bar and status line wiped at the end.
+    assert progress.failed == 1
 
 
-def test_nested_runs_skip_the_heading_that_check_already_printed(tmp_path, backend, capsys, monkeypatch):
+def test_nested_runs_draw_their_bar_even_without_a_terminal(monkeypatch):
     monkeypatch.setenv("CS1_NESTED", "1")
-    rows = [DECISION]
-    runner.run(rows, tmp_path / "out", make_args(), write_rows(tmp_path, rows))
+    progress = ui.Progress(total=2, every=10, stream=io.StringIO())
+    progress.start()
+    assert progress.bar is not None  # The parent shows it on its status line.
+    progress.close()
+
+
+def test_on_a_terminal_main_follows_the_same_run_in_a_child_and_summarises_it(tmp_path, monkeypatch, capsys):
+    source, output = write_rows(tmp_path, [DECISION]), tmp_path / "out"
+    calls = []
+
+    def follow(command, stream, first=""):
+        calls.append(command)
+        output.mkdir()
+        (output / "manifest.json").write_text(json.dumps({
+            "status": "completed", "backend": "torch", "model": {"model_class": "Qwen3ForCausalLM", "device": "cuda:0"},
+            "load_seconds": 81.1, "scoring_seconds": 2.0, "rows_scored": 1, "rows_failed": 0, "wall_seconds": 90.0,
+            "system_role_supported": True}))
+        return 0
+
+    monkeypatch.delenv("CS1_NESTED", raising=False)
+    monkeypatch.setattr(runner.ui, "is_terminal", lambda stream: True)
+    monkeypatch.setattr(runner.ui, "follow", follow)
+    monkeypatch.setattr(sys, "argv", ["cs1 run", str(source), "--output", str(output), "--mode", "direct",
+                                      "--model", "fake", "--revision", "a" * 40])
+    with pytest.raises(SystemExit) as error:
+        runner.main()
+    assert error.value.code == 0
+    assert calls == [[sys.executable, "-m", "cs1_bench", "run", *sys.argv[1:]]]  # Same arguments, passed through.
     err = capsys.readouterr().err
-    assert err.startswith("  · loading weights")
+    assert "CS1-BENCH v" in err and "Starting test for fake (torch, direct, 1 row)" in err
+    assert "loaded Qwen3ForCausalLM in 0:01:21 on cuda:0" in err
+    assert "scored 1 row in 2.0s (0.5 rows/s), 0 errors, system role native" in err
+    assert f"done in 0:01:30, {output}" in err

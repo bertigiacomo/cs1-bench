@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cs1_bench import check
+from cs1_bench import check, ui
 from cs1_bench.check import FAIL, OK, SKIP
 from cs1_bench.data import validate_decision
 
@@ -128,9 +128,9 @@ def fake_popen(status="completed", error=None, calls=None):
         output = Path(command[command.index("--output") + 1])
         output.mkdir()
         rows = check.read_rows(source)
-        manifest = {"status": status, "error": error, "load_seconds": 1.5, "scoring_seconds": 0.5,
-                    "wall_seconds": 2.2, "rows_scored": len(rows), "rows_failed": 0,
-                    "model": {"model_class": "Qwen3ForCausalLM", "device": "cuda:0"}}
+        manifest = {"status": status, "error": error, "backend": "torch", "load_seconds": 1.5,
+                    "scoring_seconds": 0.5, "wall_seconds": 2.2, "rows_scored": len(rows), "rows_failed": 0,
+                    "system_role_supported": True, "model": {"model_class": "Qwen3ForCausalLM", "device": "cuda:0"}}
         (output / "manifest.json").write_text(json.dumps(manifest))
         (output / "predictions.jsonl").write_text("".join(json.dumps(
             {"id": row["id"], "option_ids": [o["id"] for o in row["options"]], "probabilities": [0.9, 0.1],
@@ -139,7 +139,7 @@ def fake_popen(status="completed", error=None, calls=None):
                   "Loading weights:  50%|█████     | 1/2 [00:01<00:01,  1.00it/s]\n",
                   "[transformers] tokenizer regex warning\n",
                   "  ✓ done in 0:00:02, /tmp/run\n"]
-        return SimpleNamespace(stderr=iter(stderr), wait=lambda: 0)
+        return SimpleNamespace(stderr=iter(stderr), wait=lambda: 0, returncode=0)
     return popen
 
 
@@ -149,7 +149,7 @@ QWEN3 = {"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]}
 def test_named_model_without_input_runs_the_built_in_smoke_test(tmp_path, monkeypatch, capsys):
     calls = []
     folder = make_model(tmp_path, "Qwen3-8B", QWEN3)
-    monkeypatch.setattr(check.subprocess, "Popen", fake_popen(calls=calls))
+    monkeypatch.setattr(ui.subprocess, "Popen", fake_popen(calls=calls))
     run_main(monkeypatch, str(folder))
     out = capsys.readouterr().out
     assert "✓ loaded Qwen3ForCausalLM in 1.5s on cuda:0" in out
@@ -168,7 +168,7 @@ def test_input_rows_are_all_encoded_but_only_the_first_three_are_scored(tmp_path
     folder = make_model(tmp_path, "Qwen3-8B", QWEN3)
     variants = tmp_path / "mine.jsonl"
     variants.write_text("".join(json.dumps(dict(DECISION, id=f"d{index}")) + "\n" for index in range(5)))
-    monkeypatch.setattr(check.subprocess, "Popen", fake_popen(calls=calls))
+    monkeypatch.setattr(ui.subprocess, "Popen", fake_popen(calls=calls))
     run_main(monkeypatch, str(folder), "--input", str(variants), "--allow-remote-code")
     out = capsys.readouterr().out
     assert "mine.jsonl: 5 valid rows" in out and "all 5 rows encode" in out
@@ -178,7 +178,7 @@ def test_input_rows_are_all_encoded_but_only_the_first_three_are_scored(tmp_path
 
 def test_a_failed_live_run_fails_the_check(tmp_path, monkeypatch, capsys):
     folder = make_model(tmp_path, "Qwen3-8B", QWEN3)
-    monkeypatch.setattr(check.subprocess, "Popen",
+    monkeypatch.setattr(ui.subprocess, "Popen",
                         fake_popen(status="failed", error="RuntimeError: Checkpoint did not load completely"))
     with pytest.raises(SystemExit) as error:
         run_main(monkeypatch, str(folder))
@@ -189,7 +189,7 @@ def test_a_failed_live_run_fails_the_check(tmp_path, monkeypatch, capsys):
 def test_no_load_and_unnamed_models_never_start_a_live_run(tmp_path, monkeypatch):
     make_model(tmp_path, "Qwen3-8B", QWEN3)
     calls = []
-    monkeypatch.setattr(check.subprocess, "Popen", fake_popen(calls=calls))
+    monkeypatch.setattr(ui.subprocess, "Popen", fake_popen(calls=calls))
     run_main(monkeypatch, "--no-load", str(tmp_path / "Qwen3-8B"))
     run_main(monkeypatch, "--models-dir", str(tmp_path))
     assert calls == []
