@@ -149,7 +149,7 @@ The **static checks** take a few seconds per model and never load weights:
 
 The **live test** runs the real `cs1 run` on those few rows, in its own process and a temporary folder, so nothing ends up in `runs/`. It shows load time, the class that was loaded, and each row's pick with its probability and the expected answer. Wrong answers are just information. Only things that break (a failed load, a row error, a manifest that isn't `completed`) count as ✗. The smoke test is four trivial decisions, one for each language and format (`src/cs1_bench/smoke.jsonl`).
 
-Checkpoints that aren't generative language models are marked `–` (not evaluable). Models that ship their own code (`auto_map`) are ✗ unless you pass `--allow-remote-code`: then the static check lists their `.py` files without running them, and only the live test executes them. The exit code is 1 if anything is ✗.
+Checkpoints that aren't generative language models, or whose `model_type` transformers doesn't know at all (with no `auto_map` to load it), are marked `–` (not evaluable): they need another engine or their own library. Models that ship their own code (`auto_map`) are ✗ unless you pass `--allow-remote-code`: then the static check lists their `.py` files without running them, and only the live test executes them. The exit code is 1 if anything is ✗.
 
 `cs1 run` loads the model once, scores every row and creates a new folder with two files:
 

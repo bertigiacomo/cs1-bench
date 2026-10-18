@@ -28,7 +28,7 @@ DECISION = {
       "text_config": {}, "vision_config": {}}, OK, "Mistral3ForConditionalGeneration via AutoModelForImageTextToText"),
     ({"model_type": "sparkx", "architectures": ["SparkXForCausalLM"],
       "auto_map": {"AutoModelForCausalLM": "modeling_sparkx.SparkXForCausalLM"}}, FAIL, "auto_map"),
-    ({"model_type": "minicpm5", "architectures": ["MiniCPM5ForCausalLM"]}, FAIL, "unknown to transformers"),
+    ({"model_type": "clm", "architectures": ["CLMForCausalLM"]}, SKIP, "unknown to transformers"),
     ({"model_type": "bert", "architectures": ["BertForMaskedLM"]}, SKIP, "does not generate text"),
     (None, SKIP, "no config.json"),
 ])

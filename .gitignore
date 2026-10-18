@@ -12,3 +12,4 @@ cache/
 data/
 runs/
 .DS_Store
+build/

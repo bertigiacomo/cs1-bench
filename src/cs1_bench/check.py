@@ -42,8 +42,9 @@ def classify_checkpoint(config: dict | None, allow_remote_code: bool = False) ->
         return FAIL, (f"requires remote code (auto_map in config, model_type {model_type!r}); "
                       "pass --allow-remote-code after reading its .py files")
     if model_type not in CONFIG_MAPPING_NAMES:
-        return FAIL, (f"requires remote code (model_type {model_type!r} unknown to transformers "
-                      f"{transformers_version}); trust_remote_code is off")
+        # No auto_map either, so no remote code could load it: this needs another engine, not a fix.
+        return SKIP, (f"not evaluable with this engine: model_type {model_type!r} is unknown to transformers "
+                      f"{transformers_version} and has no auto_map (it needs its own library, or a newer transformers)")
     if model_type in TEXT_EXTRACTED_MODEL_TYPES:
         return OK, f"loader supported: text model of {model_type}"
     found = auto_model_class(model_type)
