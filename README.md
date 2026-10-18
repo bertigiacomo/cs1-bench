@@ -197,6 +197,14 @@ Answer with the letter of the best option.
 
 Both formats end with that last line, so it doesn't get mixed up with the format when comparing them.
 
+## Which models work
+
+The rule is simple: a model works if transformers knows its `model_type` either as a causal language model or as an image-text-to-text (multimodal) model. Multimodal models are loaded whole and only ever get text. On top of that, the tokenizer needs a chat template and must encode `A`, `B`, `C`… as single tokens. `cs1 check` tests all of this in a few seconds without loading the weights.
+
+So a new architecture usually needs no code at all. It works as soon as the installed transformers supports it. Qwen3.5 is the one special case: its text model is extracted on its own, as SemIf already did. Every manifest records the class that was actually loaded (`model_class`).
+
+Tried so far on the DGX Spark: Qwen3.5 (0.8B to 9B), Qwen3-8B, MiniCPM5-2B, and Gemma 4 E2B. For any other model, run `cs1 check` first.
+
 ## What changes from SemIf?
 
 SemIf shows that a small open model can mimic Jev's interface pretty fast without wasting inference resources on autoregressive text generation.

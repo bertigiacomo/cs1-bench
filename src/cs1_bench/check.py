@@ -9,8 +9,8 @@ import os
 import sys
 from pathlib import Path
 
-from .core import (LETTERS, TEXT_EXTRACTED_MODEL_TYPES, prompt_condition, resolve_model_source, resolve_revision,
-                   supports_system_role, validate_row)
+from .core import (LETTERS, TEXT_EXTRACTED_MODEL_TYPES, auto_model_class, prompt_condition, resolve_model_source,
+                   resolve_revision, supports_system_role, validate_row)
 from .direct import _slot_ids, encode_prompt
 from .runner import _environment, _git_state, resolve_system_roles
 
@@ -24,7 +24,6 @@ def classify_checkpoint(config: dict | None) -> tuple[str, str]:
     """Say from the raw config.json whether load_causal_model can load the checkpoint as it is."""
     from transformers import __version__ as transformers_version
     from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
-    from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
 
     if config is None:
         return SKIP, "not evaluable with this engine: no config.json (not a transformers checkpoint)"
@@ -39,13 +38,11 @@ def classify_checkpoint(config: dict | None) -> tuple[str, str]:
                       f"{transformers_version}); trust_remote_code is off")
     if model_type in TEXT_EXTRACTED_MODEL_TYPES:
         return OK, f"loader supported: text model of {model_type}"
-    if {"text_config", "vision_config"} & config.keys() or any(
-            name.endswith("ForConditionalGeneration") for name in architectures):
-        supported = ", ".join(sorted(TEXT_EXTRACTED_MODEL_TYPES))
-        return FAIL, f"loader unsupported: multimodal {model_type} (text-only loading exists for {supported})"
-    if model_type not in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES:
+    found = auto_model_class(model_type)
+    if found is None:
         return SKIP, f"not evaluable with this engine: {model_type} is not a causal language model"
-    return OK, f"loader supported: {MODEL_FOR_CAUSAL_LM_MAPPING_NAMES[model_type]}"
+    multimodal = " (multimodal, fed text only)" if found[1].endswith("ForConditionalGeneration") else ""
+    return OK, f"loader supported: {found[1]} via {found[0]}{multimodal}"
 
 
 def load_tokenizer(folder: Path):

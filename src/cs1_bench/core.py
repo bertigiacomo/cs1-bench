@@ -235,6 +235,24 @@ def resolve_revision(source: str, revision: str | None) -> tuple[str, str]:
     raise ValueError("Remote models require --revision with a pinned 40-character commit hash")
 
 
+def auto_model_class(model_type: str) -> tuple[str, str] | None:
+    """Return (Auto class, model class) transformers uses for a model type, or None if it knows neither.
+
+    Causal LMs come first; multimodal image-text-to-text models (e.g. Mistral 3) are loaded whole
+    and fed text only, so new architectures work as soon as transformers registers them.
+    """
+    from transformers.models.auto import modeling_auto as auto
+
+    registries = {
+        "AutoModelForCausalLM": auto.MODEL_FOR_CAUSAL_LM_MAPPING_NAMES,
+        "AutoModelForImageTextToText": auto.MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES,
+    }
+    for auto_class, names in registries.items():
+        if model_type in names:
+            return auto_class, names[model_type]
+    return None
+
+
 def load_causal_model(source: str, revision: str, device: str = "auto", dtype: str = "bfloat16"):
     """Load one pinned causal model on the resolved Torch device."""
     import torch
@@ -251,7 +269,8 @@ def load_causal_model(source: str, revision: str, device: str = "auto", dtype: s
     common = {"revision": None if local else revision, "local_files_only": local, "trust_remote_code": False}
     config = transformers.AutoConfig.from_pretrained(source, **common)
     tokenizer = transformers.AutoTokenizer.from_pretrained(source, **common)
-    cls = transformers.AutoModelForCausalLM
+    # Unknown types keep AutoModelForCausalLM, whose error names the unsupported configuration.
+    cls = getattr(transformers, (auto_model_class(config.model_type) or ("AutoModelForCausalLM",))[0])
     if config.model_type in TEXT_EXTRACTED_MODEL_TYPES:
         cls = getattr(transformers, "Qwen3_5ForCausalLM", None)
         if cls is None:
@@ -274,6 +293,7 @@ def load_causal_model(source: str, revision: str, device: str = "auto", dtype: s
         "revision": revision,
         "dtype": dtype,
         "device": str(target),
+        "model_class": type(model).__name__,
         "torch_version": torch.__version__,
         "transformers_version": transformers.__version__,
     }

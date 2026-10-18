@@ -19,9 +19,9 @@ DECISION = {
     ({"model_type": "qwen3_5", "architectures": ["Qwen3_5ForConditionalGeneration"],
       "text_config": {}, "vision_config": {}}, OK, "text model of qwen3_5"),
     ({"model_type": "gemma4", "architectures": ["Gemma4ForConditionalGeneration"],
-      "text_config": {}, "vision_config": {}}, FAIL, "multimodal gemma4"),
+      "text_config": {}, "vision_config": {}}, OK, "via AutoModelForCausalLM (multimodal, fed text only)"),
     ({"model_type": "mistral3", "architectures": ["Mistral3ForConditionalGeneration"],
-      "text_config": {}, "vision_config": {}}, FAIL, "multimodal mistral3"),
+      "text_config": {}, "vision_config": {}}, OK, "Mistral3ForConditionalGeneration via AutoModelForImageTextToText"),
     ({"model_type": "sparkx", "architectures": ["SparkXForCausalLM"],
       "auto_map": {"AutoModelForCausalLM": "modeling_sparkx.SparkXForCausalLM"}}, FAIL, "auto_map"),
     ({"model_type": "minicpm5", "architectures": ["MiniCPM5ForCausalLM"]}, FAIL, "unknown to transformers"),
@@ -80,9 +80,9 @@ def test_check_encodes_real_prompts_and_summarizes(tmp_path, monkeypatch, capsys
 
 
 def test_check_exits_nonzero_when_a_model_is_unsupported(tmp_path, monkeypatch, capsys):
-    make_model(tmp_path, "gemma-4-E2B-it", {"model_type": "gemma4", "architectures": ["Gemma4ForConditionalGeneration"],
-                                            "text_config": {}, "vision_config": {}})
+    make_model(tmp_path, "Spark-X2.5-4B", {"model_type": "sparkx", "architectures": ["SparkXForCausalLM"],
+                                           "auto_map": {"AutoModelForCausalLM": "modeling_spark.SparkXForCausalLM"}})
     with pytest.raises(SystemExit) as error:
-        run_main(monkeypatch, str(tmp_path / "gemma-4-E2B-it"))
+        run_main(monkeypatch, str(tmp_path / "Spark-X2.5-4B"))
     assert error.value.code == 1
-    assert "✗ loader unsupported: multimodal gemma4" in capsys.readouterr().out
+    assert "✗ requires remote code (auto_map" in capsys.readouterr().out

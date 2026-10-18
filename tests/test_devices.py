@@ -4,7 +4,8 @@ import sys
 
 import pytest
 
-from cs1_bench.core import load_causal_model, resolve_device, synchronize
+from cs1_bench import core
+from cs1_bench.core import auto_model_class, load_causal_model, resolve_device, synchronize
 
 
 @pytest.fixture
@@ -72,6 +73,7 @@ def test_loader_passes_device_dtype_and_revision(torch_stub, monkeypatch, device
         AutoModelForCausalLM=factory, __version__="test",
     )
     monkeypatch.setitem(sys.modules, "transformers", transformers)
+    monkeypatch.setattr(core, "auto_model_class", lambda model_type: ("AutoModelForCausalLM", "OtherForCausalLM"))
     torch_stub.cuda.is_available.return_value = True
     torch_stub.cuda.device_count.return_value = 1
     torch_stub.device = lambda name: name
@@ -88,3 +90,30 @@ def test_loader_passes_device_dtype_and_revision(torch_stub, monkeypatch, device
     assert kwargs["trust_remote_code"] is False
     assert metadata["device"] == target and metadata["dtype"] == dtype
     model.eval.assert_called_once()
+
+
+def test_multimodal_checkpoints_load_through_the_image_text_auto_class(torch_stub, monkeypatch):
+    model = Mock()
+    causal = SimpleNamespace(from_pretrained=Mock())
+    multimodal = SimpleNamespace(from_pretrained=Mock(return_value=(model, {})))
+    transformers = SimpleNamespace(
+        AutoConfig=SimpleNamespace(from_pretrained=Mock(return_value=SimpleNamespace(model_type="mistral3"))),
+        AutoTokenizer=SimpleNamespace(from_pretrained=Mock(return_value=object())),
+        AutoModelForCausalLM=causal, AutoModelForImageTextToText=multimodal, __version__="test",
+    )
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    monkeypatch.setattr(core, "auto_model_class",
+                        lambda model_type: ("AutoModelForImageTextToText", "Mistral3ForConditionalGeneration"))
+    torch_stub.float32 = "float32"
+    torch_stub.__version__ = "test"
+    _, _, metadata = load_causal_model("test/model", "a" * 40, "cpu", "float32")
+    causal.from_pretrained.assert_not_called()
+    assert multimodal.from_pretrained.call_args.kwargs["config"].model_type == "mistral3"
+    assert metadata["model_class"] == "Mock"
+
+
+def test_auto_model_class_prefers_causal_lms_then_multimodal_models():
+    pytest.importorskip("transformers")
+    assert auto_model_class("qwen3") == ("AutoModelForCausalLM", "Qwen3ForCausalLM")
+    assert auto_model_class("mistral3") == ("AutoModelForImageTextToText", "Mistral3ForConditionalGeneration")
+    assert auto_model_class("not-a-model") is None
