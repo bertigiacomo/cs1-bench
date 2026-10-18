@@ -101,7 +101,10 @@ def check_environment(report: Report) -> None:
     report(OK if offline else WARN, "HF_HUB_OFFLINE=1" if offline else
            "HF_HUB_OFFLINE is not set: libraries may try the network (export HF_HUB_OFFLINE=1)")
     git = _git_state()
-    if git["git_dirty"]:
+    if git["git_commit"] is None:
+        report(WARN, "code is not a git checkout, so manifests won't record the commit; "
+                     "install cs1-bench with pip install -e")
+    elif git["git_dirty"]:
         report(WARN, f"code at {str(git['git_commit'])[:12]} has uncommitted changes; commit before official runs")
     else:
         report(OK, f"code at commit {str(git['git_commit'])[:12]}")

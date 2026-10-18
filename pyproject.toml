@@ -25,6 +25,7 @@ cs1 = "cs1_bench.__main__:main"
 torch = ["torch==2.10.0"]
 test = ["pytest==8.4.2"]
 llamacpp = ["llama-cpp-python==0.3.35"]
+transformers4 = ["transformers==4.57.1"]  # for models whose own code needs it (e.g. Spark-X2.5)
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -117,9 +117,9 @@ Every run manifest records the exact torch version, so nothing gets lost by not 
 The same goes for transformers: CS1-Bench works with any version from 4.57 to 5.x (tested with 4.57.1 and 5.17.0), and each manifest records the versions of transformers, tokenizers, huggingface-hub, accelerate and safetensors that were actually used. Newer models need a newer transformers, and a few older ones only work with the version they were written for. Spark-X2.5, for example, ships its own code for transformers 4.57.1, and that code fails on 5.x. For a model like that, use a separate environment:
 
 ```bash
-uv venv envs/tf457 && source envs/tf457/bin/activate
-uv pip install torch …                                # your platform's build, as above
-uv pip install -e '.[test]' 'transformers==4.57.1'
+uv venv envs/transformers4 && source envs/transformers4/bin/activate
+uv pip install torch …                           # your platform's build, as above
+uv pip install -e '.[test,transformers4]'        # uv picks matching versions for everything else
 cs1 check --allow-remote-code Spark-X2.5-4B
 ```
 

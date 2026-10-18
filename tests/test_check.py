@@ -206,3 +206,9 @@ def test_without_models_only_the_environment_is_checked(monkeypatch, capsys):
     run_main(monkeypatch)
     out = capsys.readouterr().out
     assert "Environment" in out and "Summary" not in out
+
+
+def test_a_copy_that_is_not_a_git_checkout_is_flagged(monkeypatch, capsys):
+    monkeypatch.setattr(check, "_git_state", lambda: {"git_commit": None, "git_dirty": None})
+    check.check_environment(check.Report())
+    assert "! code is not a git checkout" in capsys.readouterr().out
