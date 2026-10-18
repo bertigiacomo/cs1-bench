@@ -1,12 +1,19 @@
-import json
+import argparse
 import os
-import sys
 from types import SimpleNamespace
 
 import numpy
 import pytest
 
-from cs1_bench.cli import main
+from cs1_bench import cli
+
+
+def parse(tmp_path, *argv):
+    parser = argparse.ArgumentParser()
+    cli.add_model_arguments(parser)
+    args = parser.parse_args(["--model", "unused", "--revision", "unused", *argv])
+    cli.check_model_arguments(parser, args)
+    return args
 
 
 @pytest.mark.parametrize("extra,message", [
@@ -18,39 +25,28 @@ from cs1_bench.cli import main
     (["--mode", "direct", "--backend", "llamacpp", "--gguf", "missing.gguf"], "requires --gguf"),
     (["--mode", "direct", "--backend", "llamacpp", "--allow-remote-code"], "--backend torch only"),
 ])
-def test_invalid_llamacpp_combinations_fail_before_loading(tmp_path, monkeypatch, capsys, extra, message):
-    monkeypatch.setattr(sys, "argv", ["cs1-score", "--model", "unused", "--revision", "unused",
-                                    "--input", "missing.jsonl", "--output", str(tmp_path / "out.jsonl"), *extra])
+def test_invalid_llamacpp_combinations_fail_before_loading(tmp_path, capsys, extra, message):
     with pytest.raises(SystemExit) as error:
-        main()
+        parse(tmp_path, *extra)
     assert error.value.code == 2
     assert message in capsys.readouterr().err
-    assert not (tmp_path / "out.jsonl").exists()
 
 
-def test_cli_passes_gguf_options_to_loader(tmp_path, monkeypatch):
+def test_gguf_options_reach_the_llamacpp_loader(tmp_path, monkeypatch):
     import cs1_bench
 
     fake_backend = SimpleNamespace(
         load_model=lambda source, revision, gguf, *, threads, context_tokens:
             (None, None, {"gguf": str(gguf), "threads": threads, "context_tokens": context_tokens}),
-        score=lambda model, tokenizer, row, metadata, max_tokens: metadata,
-        SerialPrefixScorer=None, score_shared=None,
+        score="direct", SerialPrefixScorer="serial", score_shared="shared",
     )
     monkeypatch.setattr(cs1_bench, "llamacpp_backend", fake_backend, raising=False)
-    source, output, weights = tmp_path / "input.jsonl", tmp_path / "output.jsonl", tmp_path / "model.gguf"
-    source.write_text(json.dumps({"id": "test", "state": "Evidence", "question": "Supported?",
-                                 "options": [{"id": "yes", "description": "Yes"}, {"id": "no", "description": "No"}]}) + "\n")
+    weights = tmp_path / "model.gguf"
     weights.write_bytes(b"gguf")
-    monkeypatch.setattr(sys, "argv", [
-        "cs1-score", "--backend", "llamacpp", "--mode", "direct", "--model", "unused",
-        "--revision", "unused", "--gguf", str(weights), "--llama-threads", "7",
-        "--input", str(source), "--output", str(output)])
-    main()
-    record = json.loads(output.read_text())
-    assert record["gguf"] == str(weights)
-    assert record["threads"] == 7
-    assert record["context_tokens"] == 4096
+    args = parse(tmp_path, "--backend", "llamacpp", "--mode", "direct", "--gguf", str(weights), "--llama-threads", "7")
+    _, _, metadata, scorers = cli.load_backend(args)
+    assert metadata == {"gguf": str(weights), "threads": 7, "context_tokens": 4096}
+    assert (scorers.direct, scorers.serial, scorers.shared, scorers.reranker) == ("direct", "serial", "shared", None)
 
 
 def test_load_model_rejects_unpinned_remote_revision():

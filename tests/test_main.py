@@ -6,7 +6,8 @@ from cs1_bench import __main__ as cs1
 def test_help_lists_every_command(capsys):
     cs1.main([])
     out = capsys.readouterr().out
-    assert all(command in out for command in ("import", "variants", "run", "score"))
+    assert all(command in out for command in ("import", "variants", "check", "run"))
+    assert "score" not in out  # SemIf's manifest-less scorer was folded into cs1 run.
 
 
 def test_unknown_command_exits_with_usage(capsys):

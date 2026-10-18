@@ -171,7 +171,6 @@ Other options:
 - `--device`: `cuda`, `mps` or `cpu`.
 - `--backend llamacpp --gguf model.gguf`: score a GGUF checkpoint with llama.cpp (install with `pip install -e '.[test,llamacpp]'`).
 
-`cs1 score` is the old single-file scorer from SemIf. It's still there for quick checks, but it doesn't write a manifest.
 
 ## How scoring works
 

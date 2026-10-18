@@ -1,13 +1,12 @@
-"""Create-only JSONL command line scorer."""
+"""Model, backend and mode options shared by cs1 run and cs1 check, and the model loader behind them."""
 
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from .core import load_causal_model, resolve_model_source, resolve_revision, validate_row
+from .core import load_causal_model, resolve_model_source, resolve_revision
 from .direct import score as direct_score
 from .reranker import score as reranker_score
 from .serial import SerialPrefixScorer
@@ -17,7 +16,7 @@ MODES = ("direct", "serial", "shared", "reranker")
 
 
 def add_model_arguments(parser: argparse.ArgumentParser) -> None:
-    """Add the model, backend, and scoring-mode options shared by cs1-score and cs1-run."""
+    """Add the model, backend, and scoring-mode options shared by cs1 run and cs1 check."""
     parser.add_argument("--mode", choices=MODES, required=True)
     parser.add_argument("--backend", choices=("torch", "llamacpp"), default="torch")
     parser.add_argument("--gguf", type=Path, help="Local GGUF checkpoint for --backend llamacpp")
@@ -84,39 +83,3 @@ def load_backend(args: argparse.Namespace):
                                   shared=score_shared, reranker=reranker_score)
     return model, tokenizer, metadata, scorers
 
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    add_model_arguments(parser)
-    parser.add_argument("--input", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args()
-    if args.output.exists():
-        parser.error("Output must be new")
-    check_model_arguments(parser, args)
-    rows = [json.loads(line) for line in args.input.read_text().splitlines() if line.strip()]
-    if not rows:
-        parser.error("Input is empty")
-    for row in rows:
-        validate_row(row)
-    model, tokenizer, metadata, scorers = load_backend(args)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    with args.output.open("x") as destination:
-        if args.mode == "shared":
-            results, timing = scorers.shared(model, tokenizer, rows, metadata, args.max_tokens)
-            for result in results:
-                destination.write(json.dumps({**result, "shared_timing": timing}, allow_nan=False) + "\n")
-        elif args.mode == "serial":
-            scorer = scorers.serial(model, tokenizer, metadata, args.max_tokens)
-            for row in rows:
-                destination.write(json.dumps(scorer.score(row), allow_nan=False) + "\n")
-                destination.flush()
-        else:
-            scorer = getattr(scorers, args.mode)
-            for row in rows:
-                destination.write(json.dumps(scorer(model, tokenizer, row, metadata, args.max_tokens), allow_nan=False) + "\n")
-                destination.flush()
-
-
-if __name__ == "__main__":
-    main()
