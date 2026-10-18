@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import datetime
 import json
 import os
 import subprocess
@@ -15,7 +16,7 @@ from . import ui
 from .core import (LETTERS, TEXT_EXTRACTED_MODEL_TYPES, auto_model_class, prompt_condition, resolve_model_source,
                    resolve_revision, supports_system_role, validate_row)
 from .direct import _slot_ids, encode_prompt
-from .runner import NESTED, _environment, _git_state, resolve_system_roles
+from .runner import NESTED, _environment, _git_state, errors, resolve_system_roles
 from .ui import FAIL, OK, SKIP, WARN
 
 SEVERITY = {OK: 0, ui.INFO: 0, SKIP: 0, WARN: 1, FAIL: 2}
@@ -83,16 +84,16 @@ def check_environment(report: Report) -> None:
     else:
         import torch
 
-        line = f"torch {environment['torch']} · CUDA {environment.get('torch_cuda')}"
+        line = f"torch {environment['torch']}, CUDA {environment.get('torch_cuda')}"
         count = torch.cuda.device_count() if torch.cuda.is_available() else 0
         if count:
-            line += (f" · {count} GPU: {environment['gpu']} (capability {environment['gpu_capability']}, "
+            line += (f", {count} GPU: {environment['gpu']} (capability {environment['gpu_capability']}, "
                      f"{environment['gpu_memory_gib']} GiB)")
         report(OK if count == 1 else WARN, line if count == 1 else
-               f"{line} · {count} CUDA GPUs visible; cs1 run --device cuda needs exactly one")
+               f"{line}, {count} CUDA GPUs visible; cs1 run --device cuda needs exactly one")
     from transformers import __version__ as transformers_version
 
-    report(OK, f"transformers {transformers_version} · python {environment['python']} · {environment['machine']}")
+    report(OK, f"transformers {transformers_version}, python {environment['python']}, {environment['machine']}")
     offline = os.environ.get("HF_HUB_OFFLINE", "").lower() in {"1", "true", "yes", "on"}
     report(OK if offline else WARN, "HF_HUB_OFFLINE=1" if offline else
            "HF_HUB_OFFLINE is not set: libraries may try the network (export HF_HUB_OFFLINE=1)")
@@ -165,7 +166,7 @@ def check_model(folder: Path, rows: list[dict], max_tokens: int, report: Report,
         report(FAIL, f"{failures[label]} rows fail in {label}: {first_error[label]}")
     if not failures:
         labels = {_condition_label(row) for row in resolved}
-        report(OK, f"all {len(resolved)} rows encode in {len(labels)} prompt conditions · "
+        report(OK, f"all {len(resolved)} rows encode in {len(labels)} prompt conditions, "
                    f"longest prompt {longest} tokens (limit {max_tokens})")
 
 
@@ -173,20 +174,30 @@ def read_rows(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def live_test(folder: Path, rows: list[dict], args: argparse.Namespace, report: Report) -> None:
+def live_test(folder: Path, rows: list[dict], label: str, args: argparse.Namespace, report: Report) -> None:
     """Score a few rows with the real `cs1 run`: its own process and a temporary folder, nothing kept."""
     with tempfile.TemporaryDirectory() as temporary:
         source, output = Path(temporary, "rows.jsonl"), Path(temporary, "run")
         source.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
         command = [sys.executable, "-m", "cs1_bench", "run", str(source), "--output", str(output),
                    "--mode", "direct", "--model", str(folder), "--device", args.device,
-                   "--max-tokens", str(args.max_tokens), "--warmup", "0", "--progress-every", "0"]
+                   "--max-tokens", str(args.max_tokens), "--warmup", "0", "--progress-every", "1"]
         if args.allow_remote_code:
             command.append("--allow-remote-code")
-        report(ui.INFO, f"live test: loading weights and scoring {len(rows)} rows with cs1 run (can take a minute)")
-        # stderr is not captured: transformers' messages and cs1 run's progress (live bar on a terminal) show up
-        # as they happen. stdout only repeats the summary below, so it is dropped.
-        subprocess.run(command, stdout=subprocess.DEVNULL, env={**os.environ, NESTED: "1"})
+        status = ui.StatusLine(report.stream)
+        status.show(f"  {ui.INFO} {label}: loading weights and scoring {len(rows)} rows with cs1 run")
+        # Text mode reads tqdm's carriage-return updates as separate lines; stdout only repeats the summary.
+        process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                                   env={**os.environ, NESTED: "1"})
+        for line in process.stderr:
+            line = line.rstrip("\n")
+            if ui.is_progress(line):
+                status.show(line)
+            else:
+                status.clear()
+                print(line, file=report.stream, flush=True)
+        process.wait()
+        status.clear()
         if not (output / "manifest.json").is_file():
             report(FAIL, "live run did not start: see its messages above")
             return
@@ -195,19 +206,18 @@ def live_test(folder: Path, rows: list[dict], args: argparse.Namespace, report: 
             report(FAIL, f"live run failed: {manifest.get('error')}")
             return
         predictions = read_rows(output / "predictions.jsonl")
-    model = manifest["model"]
-    roles = sorted({prediction.get("system_role", "?") for prediction in predictions})
-    report(OK, f"loaded in {manifest['load_seconds']:.1f}s as {model.get('model_class')} on {model.get('device')} "
-               f"· manifest {manifest['status']} · system role {', '.join(roles)}")
-    for prediction in predictions:
-        if "error" in prediction:
-            report(FAIL, f"{prediction['id']}: {prediction['error']}")
-            continue
-        probabilities = prediction["probabilities"]
-        best = max(range(len(probabilities)), key=probabilities.__getitem__)
-        chosen, expected = prediction["option_ids"][best], prediction.get("answer")
-        verdict = "" if expected is None else f"  (expected {expected} {'✓' if chosen == expected else '✗'})"
-        report(ui.INFO, f"{prediction['id']} → {chosen} {probabilities[best]:.2f}{verdict}")
+    model, failed = manifest["model"], manifest["rows_failed"]
+    roles = ", ".join(sorted({prediction.get("system_role", "?") for prediction in predictions}))
+    rate = manifest["rows_scored"] / manifest["scoring_seconds"] if manifest["scoring_seconds"] else 0.0
+    report(OK, f"loaded {model.get('model_class')} in {ui.duration(manifest['load_seconds'])} on {model.get('device')}")
+    first_error = next((f": {p['error']}" for p in predictions if "error" in p), "")
+    report(FAIL if failed else OK, f"scored {len(predictions)} rows in {ui.duration(manifest['scoring_seconds'])} "
+                                   f"({rate:.1f} rows/s), {errors(failed)}, system role {roles}{first_error}")
+    answered = [p for p in predictions if "error" not in p and p.get("answer") is not None]
+    correct = sum(p["option_ids"][max(range(len(p["probabilities"])), key=p["probabilities"].__getitem__)]
+                  == p["answer"] for p in answered)
+    expected = f": {correct}/{len(answered)} as expected" if answered else ""
+    report(OK, f"{label} done in {datetime.timedelta(seconds=round(manifest['wall_seconds']))}{expected}")
 
 
 def main() -> None:
@@ -245,6 +255,7 @@ def main() -> None:
         except ValueError as error:
             parser.error(f"row {row.get('id')!r}: {error}")
     live_rows = rows[:LIVE_ROWS] if args.input is not None else rows
+    live_label = f"first {len(live_rows)} rows of {args.input.name}" if args.input is not None else "smoke test"
     ui.banner("check", sys.stdout)
     print("\n" + ui.heading("Environment", sys.stdout))
     environment = Report()
@@ -258,7 +269,7 @@ def main() -> None:
         check_model(folder, rows, args.max_tokens, report, args.allow_remote_code)
         # Only named models are loaded, one process each; models that already failed statically are not.
         if args.models and not args.no_load and report.worst in {OK, WARN}:
-            live_test(folder, live_rows, args, report)
+            live_test(folder, live_rows, live_label, args, report)
         outcomes[report.worst] += 1
     if folders:
         counts = [(OK, "ready"), (WARN, "with warnings"), (FAIL, "unsupported"), (SKIP, "not evaluable")]

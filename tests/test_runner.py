@@ -169,7 +169,7 @@ def test_progress_prints_one_line_per_interval_with_rate_and_eta():
     assert lines == []  # Interval not reached yet.
     now[0] = 10
     progress.advance([{}] * 9 + [{"error": "x"}])
-    assert lines[0] == "  ▸ 20/100 (20%) · 2.0 rows/s · ETA 0:00:40 · errors 1"
+    assert lines[0] == "  ▸ 20/100 (20%), 2.0 rows/s, ETA 0:00:40, 1 error"
 
 
 def test_run_reports_progress_on_stderr(tmp_path, backend, capsys):
@@ -212,7 +212,7 @@ def test_terminals_get_a_live_bar_and_a_final_summary_line():
     progress.finish()
     output = stream.getvalue()
     assert progress.bar is None and "note above the bar" in output
-    assert "4/4 (100%)" in output and "errors 1" in output
+    assert "4/4 (100%)" in output and "1 error" in output
 
 
 def test_nested_runs_skip_the_heading_that_check_already_printed(tmp_path, backend, capsys, monkeypatch):

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import datetime
 import os
+import shutil
 import sys
 
 from . import __version__
@@ -40,3 +42,31 @@ def banner(command: str, stream=None) -> None:
         print("  " + paint(row, "36;1", stream), file=stream)
     print("  " + paint(f"Classification System One Benchmark · v{__version__} · {command}", "2", stream),
           file=stream, flush=True)
+
+
+def duration(seconds: float) -> str:
+    """Short durations in seconds, longer ones as a clock: 53.2s, 0:10:44."""
+    return f"{seconds:.1f}s" if seconds < 60 else str(datetime.timedelta(seconds=round(seconds)))
+
+
+def is_progress(line: str) -> bool:
+    """Progress lines (our ·, ▸, ✓ and tqdm bars) are worth seeing only while running; warnings and errors stay."""
+    return not line.strip() or line.startswith((f"  {INFO} ", f"  {STEP} ", f"  {OK} ")) or "%|" in line
+
+
+class StatusLine:
+    """One line rewritten in place at the bottom of a terminal (apt style); silent outside terminals."""
+
+    def __init__(self, stream):
+        self.stream, self.active = stream, is_terminal(stream)
+
+    def show(self, text: str) -> None:
+        if self.active:  # Cut to the terminal width so it never wraps onto a second line.
+            width = shutil.get_terminal_size().columns - 1
+            self.stream.write("\r\033[2K" + text[:width])
+            self.stream.flush()
+
+    def clear(self) -> None:
+        if self.active:
+            self.stream.write("\r\033[2K")
+            self.stream.flush()

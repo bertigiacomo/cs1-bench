@@ -62,6 +62,10 @@ def _environment() -> dict:
     return environment
 
 
+def errors(count: int) -> str:
+    return f"{count} error" if count == 1 else f"{count} errors"
+
+
 class Progress:
     """Report a run on stderr: a live bar on terminals (tmux included), one line per interval in logs."""
 
@@ -92,14 +96,14 @@ class Progress:
             # ascii=False: block characters, like the banner and marks (UTF-8 terminal assumed).
             self.bar = tqdm(total=self.total, file=self.stream, unit=" rows", dynamic_ncols=True, leave=False,
                             ascii=False, bar_format=f"  {step} {{n_fmt}}/{{total_fmt}} {{bar:24}} "
-                                                    "{percentage:3.0f}% · {rate_fmt} · ETA {remaining}{desc}")
-            self.bar.set_description_str(" · errors 0")
+                                                    "{percentage:3.0f}%, {rate_fmt}, ETA {remaining}{desc}")
+            self.bar.set_description_str(", 0 errors")
 
     def advance(self, records: list[dict]) -> None:
         self.done += len(records)
         self.failed += sum("error" in record for record in records)
         if self.bar is not None:
-            self.bar.set_description_str(f" · errors {self.failed}", refresh=False)
+            self.bar.set_description_str(f", {errors(self.failed)}", refresh=False)
             self.bar.update(len(records))
             return
         now = self.clock()
@@ -121,8 +125,8 @@ class Progress:
         elapsed = max(now - self.started, 1e-9)
         rate = self.done / elapsed
         remaining = (self.total - self.done) / rate if rate else 0.0
-        return (f"{self.done}/{self.total} ({100 * self.done / self.total:.0f}%) · {rate:.1f} rows/s · "
-                f"ETA {datetime.timedelta(seconds=round(remaining))} · errors {self.failed}")
+        return (f"{self.done}/{self.total} ({100 * self.done / self.total:.0f}%), {rate:.1f} rows/s, "
+                f"ETA {datetime.timedelta(seconds=round(remaining))}, {errors(self.failed)}")
 
 
 def resolve_system_roles(rows: list[dict], tokenizer) -> tuple[list[dict], bool, int]:
@@ -242,7 +246,7 @@ def run(rows: list[dict], output_dir: Path, args: argparse.Namespace, input_path
         manifest["rows_scored"], manifest["rows_failed"] = progress.done - progress.failed, progress.failed
         manifest["status"] = "completed"
         progress.finish()
-        progress.say(f"done in {datetime.timedelta(seconds=round(time.perf_counter() - started))} → {output_dir}",
+        progress.say(f"done in {datetime.timedelta(seconds=round(time.perf_counter() - started))}, {output_dir}",
                      ui.WARN if progress.failed else ui.OK)
     except BaseException as error:
         manifest["status"] = "failed"
