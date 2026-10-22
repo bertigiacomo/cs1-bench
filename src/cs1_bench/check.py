@@ -192,22 +192,22 @@ def live_test(folder: Path, rows: list[dict], label: str, args: argparse.Namespa
             command.append("--allow-remote-code")
         ui.follow(command, report.stream, first=f"  {ui.INFO} {label}: loading weights and scoring "
                                                 f"{ui.plural(len(rows), 'row')}")
-        if not (output / "manifest.json").is_file():
+        manifests = sorted(output.glob("*.manifest.json"))
+        if not manifests:
             report(FAIL, "live run did not start: see its messages above")
             return
-        manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
-        if manifest["status"] != "completed":
+        manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+        if manifest["status"] == "failed":
             report(FAIL, f"live run failed: {manifest.get('error')}")
             return
-        predictions = read_rows(output / "predictions.jsonl")
+        predictions = read_rows(output / f"{manifest['run_id']}.predictions.jsonl")
     failed = manifest["rows_failed"]
     report(OK, ui.loaded(manifest))
     report(FAIL if failed else OK, ui.scored(manifest))
     if failed:
         report(FAIL, "first error: " + next(p["error"] for p in predictions if "error" in p))
     answered = [p for p in predictions if "error" not in p and p.get("answer") is not None]
-    correct = sum(p["option_ids"][max(range(len(p["probabilities"])), key=p["probabilities"].__getitem__)]
-                  == p["answer"] for p in answered)
+    correct = sum(p["prediction"] == p["answer"] for p in answered)
     expected = f": {correct}/{len(answered)} as expected" if answered else ""
     report(OK, f"{label} done in {ui.clock(manifest['wall_seconds'])}{expected}")
 

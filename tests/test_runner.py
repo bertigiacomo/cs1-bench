@@ -31,8 +31,9 @@ class Tokenizer:
 
 
 def fake_result(row):
-    return {"id": row["id"], "probabilities": [0.75, 0.25], "prompt_lang": row.get("prompt_lang", "en"),
-            "system_role": row.get("system_role", "native")}
+    return {"id": row["id"], "option_ids": [option["id"] for option in row["options"]],
+            "probabilities": [0.75, 0.25], "option_logits": [2.0, 0.9], "total_seconds": 0.1,
+            "prompt_lang": row.get("prompt_lang", "en"), "system_role": row.get("system_role", "native")}
 
 
 @pytest.fixture
@@ -49,17 +50,18 @@ def backend(monkeypatch):
         calls.shared.append([row["id"] for row in rows])
         return [fake_result(row) for row in rows], {"total_seconds": 0.5}
 
-    scorers = SimpleNamespace(direct=direct, shared=shared, serial=None, reranker=direct)
+    scorers = SimpleNamespace(direct=direct, shared=shared, serial=None)
     monkeypatch.setattr(runner, "load_backend",
-                        lambda args: ("model", calls.tokenizer, {"source": "fake", "revision": "a" * 40}, scorers))
+                        lambda args: ("model", calls.tokenizer, {"device": "cpu", "model_class": "Fake"}, scorers))
+    monkeypatch.setattr(runner, "_git_state", lambda: {"git_commit": "c" * 40, "git_dirty": False})
     return calls
 
 
-def make_args(mode="direct", warmup=0, model="fake", allow_remote_code=False):
+def make_args(mode="direct", warmup=0, model="fake", allow_remote_code=False, run_id="fake_variants_20261022-2000"):
     return argparse.Namespace(mode=mode, backend="torch", model=model, revision="a" * 40, max_tokens=128,
                               warmup=warmup, progress_every=0, revision_source="argument",
                               allow_remote_code=allow_remote_code, device="cpu", dtype="float32", gguf=None,
-                              llama_threads=None)
+                              llama_threads=None, model_id=None, run_id=run_id)
 
 
 def write_rows(tmp_path, rows):
@@ -68,26 +70,57 @@ def write_rows(tmp_path, rows):
     return path
 
 
-def read_output(output):
-    predictions = [json.loads(line) for line in (output / "predictions.jsonl").read_text().splitlines()]
-    return predictions, json.loads((output / "manifest.json").read_text())
+def read_output(output, run_id="fake_variants_20261022-2000"):
+    predictions = [json.loads(line) for line in (output / f"{run_id}.predictions.jsonl").read_text().splitlines()]
+    return predictions, json.loads((output / f"{run_id}.manifest.json").read_text())
 
 
-def test_run_writes_self_contained_predictions_and_manifest(tmp_path, backend):
+# The 24 manifest fields of the thesis (STANDARD-DATI.md), in order, then the ones only cs1-bench writes.
+STANDARD_FIELDS = ["run_id", "status", "manifest_origin", "model_id", "wrapper_id", "prompt_id", "python_version",
+                   "model_revision", "dtype", "code_commit", "inputs", "prompt_langs", "prompt_formats", "orders",
+                   "rows_written", "rows_failed", "started_utc", "probabilities_kind", "confidence_kind",
+                   "seconds_kind", "temperature", "torch_version", "transformers_version", "gpu"]
+
+
+def test_run_writes_common_rows_and_the_standard_manifest(tmp_path, backend):
     rows = expand(DECISION, langs=("en", "it"), rotations="cyclic")
     source = write_rows(tmp_path, rows)
     runner.run(rows, tmp_path / "out", make_args(), source)
     predictions, manifest = read_output(tmp_path / "out")
-    assert [prediction["id"] for prediction in predictions] == [row["id"] for row in rows]
-    first = predictions[0]
-    assert (first["answer"], first["base_id"], first["rotation"], first["lang"]) == ("account", "d1", 0, "en")
-    assert manifest["status"] == "completed"
-    assert (manifest["rows_scored"], manifest["rows_failed"]) == (4, 0)
-    assert manifest["input"]["sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
-    assert manifest["model"]["revision"] == "a" * 40
-    assert manifest["conditions"]["prompt_lang"] == {"en": 2, "it": 2}
-    assert manifest["system_role_supported"] is True
-    assert {"git_commit", "git_dirty"} <= manifest["code"].keys()
+    assert [(p["prompt_lang"], p["order"]) for p in predictions] == [("en", "dir0"), ("en", "dir1"),
+                                                                      ("it", "dir0"), ("it", "dir1")]
+    first, second = predictions[0], predictions[1]
+    assert list(first)[:12] == ["run_id", "decision_id", "set", "prompt_lang", "prompt_format", "order",
+                                "option_ids", "answer", "prediction", "probabilities", "confidence", "seconds"]
+    assert (first["run_id"], first["decision_id"], first["set"]) == ("fake_variants_20261022-2000", "d1", "d1")
+    assert first["probabilities"] == {"account": 0.75, "billing": 0.25} and first["prediction"] == "account"
+    assert second["option_ids"] == ["billing", "account"] and second["prediction"] == "billing"  # As seen.
+    assert first["option_logits"] == {"account": 2.0, "billing": 0.9} and first["confidence"] is None
+    assert list(manifest)[:24] == STANDARD_FIELDS
+    assert manifest["status"] == "completed" and manifest["prompt_id"] == "cs1bench-v1"
+    assert (manifest["rows_written"], manifest["rows_failed"]) == (4, 0)
+    assert manifest["inputs"] == [{"dataset_id": "variants", "rows": 4,
+                                   "sha256": hashlib.sha256(source.read_bytes()).hexdigest()}]
+    assert (manifest["prompt_langs"], manifest["orders"]) == (["en", "it"], ["dir0", "dir1"])
+    assert (manifest["model_id"], manifest["model_revision"], manifest["code_commit"]) == ("fake", "a" * 40, "c" * 40)
+    assert (manifest["code_dirty"], manifest["system_role"]) == (False, "native")
+
+
+def test_run_id_comes_from_model_dataset_and_utc_time(tmp_path, backend):
+    rows = [DECISION]
+    source = write_rows(tmp_path, rows)
+    runner.run(rows, tmp_path / "out", make_args(model="models/Qwen3.5-9B", run_id=None), source)
+    [manifest] = (tmp_path / "out").glob("*.manifest.json")
+    assert manifest.name.startswith("Qwen3.5-9B_variants_") and len(manifest.name) == len(
+        "Qwen3.5-9B_variants_20261022-2000.manifest.json")
+
+
+def test_existing_run_files_are_never_overwritten(tmp_path, backend):
+    rows = [DECISION]
+    source = write_rows(tmp_path, rows)
+    runner.run(rows, tmp_path / "out", make_args(), source)
+    with pytest.raises(FileExistsError):
+        runner.run(rows, tmp_path / "out", make_args(), source)
 
 
 def test_models_without_system_role_fall_back_to_merge_and_say_so(tmp_path, backend):
@@ -96,8 +129,8 @@ def test_models_without_system_role_fall_back_to_merge_and_say_so(tmp_path, back
     runner.run(rows, tmp_path / "out", make_args(), write_rows(tmp_path, rows))
     predictions, manifest = read_output(tmp_path / "out")
     assert all(row["system_role"] == "merge" for row in backend.direct)
-    assert all(prediction["system_role"] == "merge" for prediction in predictions)
-    assert (manifest["system_role_supported"], manifest["system_role_fallbacks"]) == (False, 2)
+    assert all("system_role" not in prediction for prediction in predictions)  # Constant: in the manifest.
+    assert manifest["system_role"] == "merge"
 
 
 def test_a_failing_row_is_recorded_and_the_run_continues(tmp_path, backend):
@@ -105,9 +138,10 @@ def test_a_failing_row_is_recorded_and_the_run_continues(tmp_path, backend):
     runner.run(rows, tmp_path / "out", make_args(), write_rows(tmp_path, rows))
     predictions, manifest = read_output(tmp_path / "out")
     assert "not one exact round-trip token" in predictions[0]["error"]
-    assert predictions[0]["answer"] == "account"
+    assert (predictions[0]["answer"], predictions[0]["prediction"], predictions[0]["probabilities"]) == (
+        "account", None, None)
     assert "error" not in predictions[1]
-    assert (manifest["rows_scored"], manifest["rows_failed"]) == (1, 1)
+    assert (manifest["status"], manifest["rows_written"], manifest["rows_failed"]) == ("partial", 2, 1)
 
 
 def test_warmup_runs_untimed_and_is_not_written(tmp_path, backend):
@@ -115,7 +149,7 @@ def test_warmup_runs_untimed_and_is_not_written(tmp_path, backend):
     runner.run(rows, tmp_path / "out", make_args(warmup=2), write_rows(tmp_path, rows))
     predictions, manifest = read_output(tmp_path / "out")
     assert [row["id"] for row in backend.direct] == ["one", "one", "one", "two"]
-    assert len(predictions) == 2 and manifest["warmup_repeats"] == 2
+    assert len(predictions) == 2
 
 
 def test_shared_mode_groups_by_state_and_prompt_condition(tmp_path, backend):
@@ -124,15 +158,7 @@ def test_shared_mode_groups_by_state_and_prompt_condition(tmp_path, backend):
     runner.run(rows, tmp_path / "out", make_args(mode="shared"), write_rows(tmp_path, rows))
     assert backend.shared == [["q0#en.json.r0", "q1#en.json.r0"], ["q0#it.json.r0", "q1#it.json.r0"]]
     predictions, _ = read_output(tmp_path / "out")
-    assert all(prediction["shared_timing"] == {"total_seconds": 0.5} for prediction in predictions)
-
-
-def test_reranker_predictions_do_not_claim_prompt_conditions(tmp_path, backend):
-    rows = expand(DECISION, langs=("it",))
-    runner.run(rows, tmp_path / "out", make_args(mode="reranker"), write_rows(tmp_path, rows))
-    [prediction], manifest = read_output(tmp_path / "out")
-    assert prediction["base_id"] == "d1"
-    assert "system_role_supported" not in manifest
+    assert [prediction["decision_id"] for prediction in predictions] == ["q0", "q1", "q0", "q1"]
 
 
 def test_failed_load_still_leaves_a_manifest(tmp_path, monkeypatch):
@@ -143,20 +169,31 @@ def test_failed_load_still_leaves_a_manifest(tmp_path, monkeypatch):
     rows = [DECISION]
     with pytest.raises(RuntimeError):
         runner.run(rows, tmp_path / "out", make_args(), write_rows(tmp_path, rows))
-    manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
+    manifest = json.loads((tmp_path / "out" / "fake_variants_20261022-2000.manifest.json").read_text())
     assert manifest["status"] == "failed"
     assert "Checkpoint did not load completely" in manifest["error"]
 
 
-def test_cli_refuses_an_existing_output_directory(tmp_path, monkeypatch, capsys):
+def test_cli_refuses_a_run_id_that_already_has_files(tmp_path, monkeypatch, capsys):
     source = write_rows(tmp_path, [DECISION])
     (tmp_path / "out").mkdir()
-    monkeypatch.setattr(sys, "argv", ["cs1-run", str(source), "--output", str(tmp_path / "out"),
-                                      "--mode", "direct", "--model", "fake", "--revision", "a" * 40])
+    (tmp_path / "out" / "fake_variants_20261022-2000.manifest.json").write_text("{}")
+    monkeypatch.setattr(sys, "argv", ["cs1-run", str(source), "--output", str(tmp_path / "out"), "--mode", "direct",
+                                      "--model", "fake", "--revision", "a" * 40, "--run-id", "fake_variants_20261022-2000"])
     with pytest.raises(SystemExit) as error:
         runner.main()
     assert error.value.code == 2
-    assert "Output directory must be new" in capsys.readouterr().err
+    assert "already has files" in capsys.readouterr().err
+
+
+def test_cli_refuses_model_ids_with_an_underscore(tmp_path, monkeypatch, capsys):
+    source = write_rows(tmp_path, [DECISION])
+    monkeypatch.setattr(sys, "argv", ["cs1-run", str(source), "--output", str(tmp_path / "out"), "--mode", "direct",
+                                      "--model", "fake", "--model-id", "my_model", "--revision", "a" * 40])
+    with pytest.raises(SystemExit) as error:
+        runner.main()
+    assert error.value.code == 2
+    assert "contain no underscore" in capsys.readouterr().err
 
 
 def test_progress_prints_one_line_per_interval_with_rate_and_eta():
@@ -230,10 +267,11 @@ def test_on_a_terminal_main_follows_the_same_run_in_a_child_and_summarises_it(tm
     def follow(command, stream, first=""):
         calls.append(command)
         output.mkdir()
-        (output / "manifest.json").write_text(json.dumps({
-            "status": "completed", "backend": "torch", "model": {"model_class": "Qwen3ForCausalLM", "device": "cuda:0"},
-            "load_seconds": 81.1, "scoring_seconds": 2.0, "rows_scored": 1, "rows_failed": 0, "wall_seconds": 90.0,
-            "system_role_supported": True}))
+        run_id = command[command.index("--run-id") + 1]
+        (output / f"{run_id}.manifest.json").write_text(json.dumps({
+            "status": "completed", "backend": "torch", "model_class": "Qwen3ForCausalLM", "device": "cuda:0",
+            "load_seconds": 81.1, "scoring_seconds": 2.0, "rows_written": 1, "rows_failed": 0, "wall_seconds": 90.0,
+            "system_role": "native"}))
         return 0
 
     monkeypatch.delenv("CS1_NESTED", raising=False)
@@ -244,7 +282,9 @@ def test_on_a_terminal_main_follows_the_same_run_in_a_child_and_summarises_it(tm
     with pytest.raises(SystemExit) as error:
         runner.main()
     assert error.value.code == 0
-    assert calls == [[sys.executable, "-m", "cs1_bench", "run", *sys.argv[1:]]]  # Same arguments, passed through.
+    arguments = calls[0][4:]
+    assert arguments[:-2] == sys.argv[1:] and arguments[-2] == "--run-id"  # Same arguments, plus the run ID.
+    assert arguments[-1].startswith("fake_variants_")
     err = capsys.readouterr().err
     assert "CS1-BENCH v" in err and "Starting test for fake (torch, direct, 1 row)" in err
     assert "loaded Qwen3ForCausalLM in 0:01:21 on cuda:0" in err

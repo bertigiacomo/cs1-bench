@@ -26,25 +26,25 @@ def test_banner_is_one_line_with_the_version():
     assert stream.getvalue() == f"====== CS1-BENCH v{ui.__version__} ======\n"
 
 
-MANIFEST = {"status": "completed", "backend": "torch", "model": {"model_class": "Mistral3ForConditionalGeneration",
-            "device": "cuda:0"}, "load_seconds": 53.2, "scoring_seconds": 0.9, "rows_scored": 3, "rows_failed": 1,
-            "wall_seconds": 54.4, "system_role_supported": True}
+MANIFEST = {"run_id": "m_d_20261022-2000", "status": "partial", "backend": "torch",
+            "model_class": "Mistral3ForConditionalGeneration", "device": "cuda:0", "load_seconds": 53.2,
+            "scoring_seconds": 0.9, "rows_written": 4, "rows_failed": 1, "wall_seconds": 54.4, "system_role": "native"}
 
 
 def test_summary_lines_come_from_the_manifest():
     assert ui.loaded(MANIFEST) == "loaded Mistral3ForConditionalGeneration in 53.2s on cuda:0"
     assert ui.scored(MANIFEST) == "scored 4 rows in 0.9s (4.4 rows/s), 1 error, system role native"
-    assert ui.scored({**MANIFEST, "system_role_supported": None}).endswith("1 error")  # Reranker: no role.
-    assert ui.finished(54.4, "runs/x", 1) == "done in 0:00:54, runs/x (failed rows have an 'error' field in predictions.jsonl)"
+    assert ui.scored({**MANIFEST, "system_role": None}).endswith("1 error")  # Failed before the template was read.
+    assert ui.finished(54.4, "runs/x", 1) == "done in 0:00:54, runs/x (failed rows have an 'error' field)"
 
 
 def test_report_run_summarises_a_finished_child_run(tmp_path):
     stream = io.StringIO()
-    ui.report_run(tmp_path, stream)
+    ui.report_run(tmp_path, MANIFEST["run_id"], stream)
     assert "✗ run did not start" in stream.getvalue()
-    (tmp_path / "manifest.json").write_text(json.dumps(MANIFEST))
+    (tmp_path / "m_d_20261022-2000.manifest.json").write_text(json.dumps(MANIFEST))
     stream = io.StringIO()
-    ui.report_run(tmp_path, stream)
+    ui.report_run(tmp_path, MANIFEST["run_id"], stream)
     assert stream.getvalue().splitlines() == [
         "  ✓ " + ui.loaded(MANIFEST), "  ! " + ui.scored(MANIFEST), "  ! " + ui.finished(54.4, tmp_path, 1)]
 

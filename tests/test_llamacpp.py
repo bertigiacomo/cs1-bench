@@ -20,7 +20,6 @@ def parse(tmp_path, *argv):
     (["--mode", "direct", "--gguf", "x.gguf"], "--gguf requires --backend llamacpp"),
     (["--mode", "direct", "--llama-threads", "4"], "--llama-threads requires --backend llamacpp"),
     (["--mode", "direct", "--backend", "llamacpp", "--llama-threads", "0"], "must be positive"),
-    (["--mode", "reranker", "--backend", "llamacpp", "--gguf", "x.gguf"], "reranker requires torch"),
     (["--mode", "direct", "--backend", "llamacpp"], "requires --gguf"),
     (["--mode", "direct", "--backend", "llamacpp", "--gguf", "missing.gguf"], "requires --gguf"),
     (["--mode", "direct", "--backend", "llamacpp", "--allow-remote-code"], "--backend torch only"),
@@ -46,7 +45,7 @@ def test_gguf_options_reach_the_llamacpp_loader(tmp_path, monkeypatch):
     args = parse(tmp_path, "--backend", "llamacpp", "--mode", "direct", "--gguf", str(weights), "--llama-threads", "7")
     _, _, metadata, scorers = cli.load_backend(args)
     assert metadata == {"gguf": str(weights), "threads": 7, "context_tokens": 4096}
-    assert (scorers.direct, scorers.serial, scorers.shared, scorers.reranker) == ("direct", "serial", "shared", None)
+    assert (scorers.direct, scorers.serial, scorers.shared) == ("direct", "serial", "shared")
 
 
 def test_load_model_rejects_unpinned_remote_revision():

@@ -13,7 +13,7 @@ CS1-Bench is a bachelor's thesis project. The maintainer is learning by building
 - Run outputs are create-only: never overwrite an existing result file. Load one model per scorer process and expose exactly one CUDA GPU to it.
 - Pin every remote model to a 40-character commit revision and record it in the output.
 - Prompt construction lives in `src/cs1_bench/core.py`. Backends reuse it and must not build their own prompts. Any change to prompt text, structure, or message roles needs a new `PROMPT_VERSION`.
-- Record every experimental condition that can change a score (prompt language, system-role handling, option order, dtype, quantization, backend) in each output row.
+- Record every experimental condition that can change a score (prompt language, system-role handling, option order, dtype, quantization, backend): in each output row when it varies within a run, in the manifest when it is constant over the run. Rows and manifest follow the thesis' common format (`src/cs1_bench/output.py`).
 - Do not commit model weights, Hugging Face caches, or third-party datasets without a redistribution grant.
 
 ## Attribution

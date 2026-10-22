@@ -10,7 +10,7 @@ A System One decision takes a **state** (the evidence), a **question** (the crit
 
 | Component | State |
 |---|---|
-| Scoring engine (direct, serial, shared, reranker) | Imported from SemIf |
+| Scoring engine (direct, serial, shared) | Imported from SemIf |
 | Backends: Torch (CUDA, MPS, CPU) and llama.cpp (GGUF) | Imported from SemIf |
 | Data import: CSV, JSON and JSONL into canonical decisions (`cs1 import`) | Done |
 | Runner: one model at a time, row-level results plus a run manifest (`cs1 run`) | Done |
@@ -136,10 +136,10 @@ export HF_HUB_OFFLINE=1          # never touch the network at runtime
 cs1 import tickets.csv --output data/tickets.jsonl --lang it
 cs1 variants data/tickets.jsonl --output data/tickets-variants.jsonl --langs en,it --rotations cyclic
 cs1 check Qwen3.5-4B --input data/tickets-variants.jsonl  # static checks + a 3-row live run
-cs1 run data/tickets-variants.jsonl --mode direct --model Qwen3.5-4B --output runs/qwen3.5-4b/
+cs1 run data/tickets-variants.jsonl --mode direct --model Qwen3.5-4B --output runs/tickets/cs1-bench/
 ```
 
-**Revisions.** For a local folder, `--revision` is optional. CS1-Bench reads the commit from the `.cache/huggingface/download/*.metadata` files that `hf download --local-dir` leaves behind, and they all have to agree. If those files aren't there, it looks for a `REVISION` file with the hash in the model folder. If it can't find either, it stops and asks for `--revision`. The manifest records where the revision came from (`revision_source`). Hugging Face IDs like `Qwen/Qwen3.5-4B` still need `--revision`.
+**Revisions.** For a local folder, `--revision` is optional. CS1-Bench reads the commit from the `.cache/huggingface/download/*.metadata` files that `hf download --local-dir` leaves behind, and they all have to agree. If those files aren't there, it looks for a `REVISION` file with the hash in the model folder. If it can't find either, it stops and asks for `--revision`. Hugging Face IDs like `Qwen/Qwen3.5-4B` still need `--revision`.
 
 **`cs1 check`** works in levels. You get as much as you ask for:
 
@@ -158,27 +158,28 @@ The **static checks** take a few seconds per model and never load weights:
 - whether `A`, `B`, `C`… are single tokens;
 - whether every prompt (your file's, or the smoke test's) encodes cleanly.
 
-The **live test** runs the real `cs1 run` on those few rows, in its own process and a temporary folder, so nothing ends up in `runs/`. While it runs, a single status line at the bottom shows its progress (loading, the transformers weight bar, scoring) and is wiped at the end. Warnings stay on screen. What's left is three lines: the class that was loaded and how long it took, the scoring speed and errors, and how many rows matched the expected answer. Per-row answers aren't printed (in `cs1 run` they're in `predictions.jsonl`). Wrong answers are just information. Only things that break (a failed load, a row error, a manifest that isn't `completed`) count as ✗. The smoke test is four trivial decisions, one for each language and format (`src/cs1_bench/smoke.jsonl`).
+The **live test** runs the real `cs1 run` on those few rows, in its own process and a temporary folder, so nothing ends up in `runs/`. While it runs, a single status line at the bottom shows its progress (loading, the transformers weight bar, scoring) and is wiped at the end. Warnings stay on screen. What's left is three lines: the class that was loaded and how long it took, the scoring speed and errors, and how many rows matched the expected answer. Per-row answers aren't printed (in `cs1 run` they're in `predictions.jsonl`). Wrong answers are just information. Only things that break (a failed load, a row error, a `failed` manifest) count as ✗. The smoke test is four trivial decisions, one for each language and format (`src/cs1_bench/smoke.jsonl`).
 
 Checkpoints that aren't generative language models, or whose `model_type` transformers doesn't know at all (with no `auto_map` to load it), are marked `–` (not evaluable): they need another engine or their own library. Models that ship their own code (`auto_map`) are ✗ unless you pass `--allow-remote-code`: then the static check lists their `.py` files without running them, and only the live test executes them. The exit code is 1 if anything is ✗.
 
-`cs1 run` loads the model once, scores every row and creates a new folder with two files:
+`cs1 run` loads the model once, scores every row and writes two files into the `--output` folder, named after the run ID `<model>_<dataset>_<YYYYMMDD-HHMM>` (UTC; model = folder name or `--model-id`, dataset = input file name). Existing files are never overwritten.
 
-- `predictions.jsonl`: one line per variant with the option probabilities, timings, prompt conditions, and the gold `answer`. It's everything the evaluator needs.
-- `manifest.json`: what was run and how. That includes the git commit of the code (and whether it had uncommitted changes), the exact command, model and revision, a hash of the input file, how many rows had each condition, timings, and the hardware.
+- `<run_id>.predictions.jsonl`: one line per variant in the common format of my thesis, the same for every model: 12 fixed columns (`run_id`, `decision_id`, `set`, `prompt_lang`, `prompt_format`, `order`, `option_ids` as the model saw them, the gold `answer`, `prediction`, `probabilities`, `confidence`, `seconds`) and then the optional ones (`option_logits`, `allowed_token_mass`, `full_vocab_argmax_id`, `forward_seconds`, `prompt_sha256`, `input_tokens`, `error`). It's everything the evaluator needs.
+- `<run_id>.manifest.json`: what was run and how. The 24 standard fields of the thesis (model, revision, dtype, git commit, input hash, conditions, row counts, Python/torch/transformers versions, GPU…), then a few of CS1-Bench's own: whether the code had uncommitted changes (`code_dirty`), backend, mode, device, `system_role`, timings and the error, if any. Settings that are constant over a run live here, not in the rows.
 
 A few things it does for you:
 
 - **Progress on screen.** In a terminal (tmux too), everything that's only worth seeing while it runs (loading, transformers' weight bar, warm-up, our scoring bar `▸ 1200/2400 ██████░░░░ 50%, 38.2 rows/s, ETA 00:31, 0 errors`) shows up on one line at the bottom that rewrites itself. To do that, `cs1 run` runs itself in a child process and reads its output. When it's done you're left with warnings, if any, and three lines: `loaded …`, `scored …`, `done in …`. In a log file (`cs1 run … 2>&1 | tee run.log`) it doesn't do this: every line is kept, with a progress line every 10 seconds (`--progress-every`). Every line starts with a mark (`✓` done, `!` warning, `✗` failed, `·` info), colours only show up in a real terminal, and `NO_COLOR=1` turns them off.
 - **Warm-up.** The first pass on a GPU is always slow (kernels loading, memory allocation), so the first row is run once and thrown away. Change this with `--warmup N`.
-- **Our system prompt, always.** It goes in as a system message. If a model's chat template has no system role, it's put at the top of the user message instead. Each output row says which one happened (`system_role`: `native` or `merge`), and the manifest says whether the model supports a system role.
+- **Our system prompt, always.** It goes in as a system message. If a model's chat template has no system role, it's put at the top of the user message instead. The manifest says which one happened (`system_role`: `native` or `merge`).
 - **Remote code, only if you ask.** Some models ship their own Python code. `--allow-remote-code` lets transformers run it (that's its `trust_remote_code`). It's off by default, prints the `.py` files it's about to run, and ends up in the manifest. Read those files first, because they run with your permissions.
 - **Per-row errors.** If a row can't be scored (for example, the tokenizer splits `A` into two tokens), it gets an `error` field and the run keeps going.
-- **A manifest even on a crash**, with `"status": "failed"` and the error message. It also records the GPU's name, compute capability, and memory.
+- **A manifest even on a crash**, with `"status": "failed"` and the error message. If some rows failed, the status is `partial`.
 
 Other options:
 
-- `--mode`: `direct`, `serial`, `shared` or `reranker`.
+- `--mode`: `direct`, `serial` or `shared`.
+- `--model-id`: the model ID of the thesis registry, if it differs from the folder name.
 - `--device`: `cuda`, `mps` or `cpu`.
 - `--backend llamacpp --gguf model.gguf`: score a GGUF checkpoint with llama.cpp (install with `pip install -e '.[test,llamacpp]'`).
 
@@ -188,13 +189,12 @@ Other options:
 The model receives the decision with options labelled `A`, `B`, `C`… (see [Prompt conditions](#prompt-conditions) for the layouts). CS1-Bench runs one forward pass and keeps the logits of those letter tokens, so there is no decoding or answer parsing. The tokenizer must encode each letter as exactly one token, and appending it must not change how the prompt is tokenized. Otherwise the row fails instead of producing a silently wrong score.
 
 - `serial` and `shared` reuse the KV cache of a common `state` across questions.
-- `reranker` scores each option separately with Qwen3-Reranker. The model never sees the option order, so this mode serves as a control for position bias.
 
 Each output row also has `allowed_token_mass`: how much of the model's next-token probability lands on the answer letters at all. If it's low, the model wanted to say something else (like "The" or "Based"), and its letter scores are less trustworthy.
 
 ## Prompt conditions
 
-Two optional fields on a row change how the prompt looks. They're experiment settings rather than data, so you won't usually write them by hand. Every output row records them, together with `system_role`, which isn't a setting: `cs1 run` picks it for each model (see above).
+Two optional fields on a row change how the prompt looks. They're experiment settings rather than data, so you won't usually write them by hand. Every output row records them. `system_role` isn't a setting: `cs1 run` picks it for each model and writes it in the manifest (see above).
 
 | Field | Values | What it does |
 |---|---|---|
@@ -236,10 +236,10 @@ CS1-Bench builds on it with a broader question: are SLMs and LLMs good at fast d
 
 - **The scoring engine and the Torch backend.** This is the heart of SemIf, so there was no reason to touch it.
 - **The llama.cpp backend.** It lets me try quantized models (Q4, Q8…) and see whether they behave differently from BF16. It reuses the same reference tokenizer, so the comparison with Torch should be fair.
-- **The reranker mode.** It looks at one option at a time and never sees their order, so I'm hoping it works as a sort of control group for position bias.
 
 **What I removed**
 
+- **The reranker mode.** I never used it in my runs, so it's gone (October 2026).
 - **The MLX backend.** It only runs on Apple Silicon and is written for Qwen3.5. My real runs happen on an NVIDIA DGX Spark, and on a Mac you can still use Torch MPS or llama.cpp with Metal.
 - **The browser demos and the EXL3 bridge.** They're cool, but they're not what this benchmark is about.
 - **SemIf's datasets and published results.** Those numbers belong to SemIf. I'd rather build my own evidence than lean on theirs.

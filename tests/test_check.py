@@ -134,13 +134,13 @@ def fake_popen(status="completed", error=None, calls=None):
         output = Path(command[command.index("--output") + 1])
         output.mkdir()
         rows = check.read_rows(source)
-        manifest = {"status": status, "error": error, "backend": "torch", "load_seconds": 1.5,
-                    "scoring_seconds": 0.5, "wall_seconds": 2.2, "rows_scored": len(rows), "rows_failed": 0,
-                    "system_role_supported": True, "model": {"model_class": "Qwen3ForCausalLM", "device": "cuda:0"}}
-        (output / "manifest.json").write_text(json.dumps(manifest))
-        (output / "predictions.jsonl").write_text("".join(json.dumps(
-            {"id": row["id"], "option_ids": [o["id"] for o in row["options"]], "probabilities": [0.9, 0.1],
-             "answer": row.get("answer"), "system_role": "native"}) + "\n" for row in rows))
+        manifest = {"run_id": "m_rows_20261022-2000", "status": status, "error": error, "backend": "torch",
+                    "load_seconds": 1.5, "scoring_seconds": 0.5, "wall_seconds": 2.2, "rows_written": len(rows),
+                    "rows_failed": 0, "system_role": "native", "model_class": "Qwen3ForCausalLM", "device": "cuda:0"}
+        (output / "m_rows_20261022-2000.manifest.json").write_text(json.dumps(manifest))
+        (output / "m_rows_20261022-2000.predictions.jsonl").write_text("".join(json.dumps(
+            {"decision_id": row["id"], "prediction": row["options"][0]["id"],
+             "answer": row.get("answer")}) + "\n" for row in rows))
         stderr = ["  · loading model (torch, direct)\n",
                   "Loading weights:  50%|█████     | 1/2 [00:01<00:01,  1.00it/s]\n",
                   "[transformers] tokenizer regex warning\n",

@@ -10,7 +10,7 @@ from .core import LETTERS, digest, direct_messages, prompt_condition, softmax, s
 # v2: natural en/it wording, json or text layout, native or merged system turn, and a closing line.
 # v3: the text layout labels the question block "Criterion"/"Criterio" (was "Question"/"Domanda"),
 #     matching the system prompt and the JSON "criterion"/"criterio" key.
-PROMPT_VERSION = "direct-options-v3"
+PROMPT_VERSION = "cs1bench-v1"  # was direct-options-v3: same text, renamed to the registry ID
 
 
 def _slot_ids(tokenizer, count: int) -> list[int]:

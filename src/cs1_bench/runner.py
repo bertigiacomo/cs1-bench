@@ -1,9 +1,8 @@
-"""Run one model over decision variants and write row-level predictions plus a run manifest."""
+"""Run one model over decision variants and write common-format rows plus a run manifest."""
 
 from __future__ import annotations
 
 import argparse
-import collections
 import datetime
 import hashlib
 import json
@@ -15,20 +14,10 @@ import time
 from importlib import metadata
 from pathlib import Path
 
-from . import __version__, ui
+from . import output, ui
 from .cli import add_model_arguments, check_model_arguments, load_backend
-from .conditions import VARIANT_FIELDS
 from .core import prompt_condition, supports_system_role, validate_row
-
-MANIFEST_SCHEMA = "cs1-bench-run-v1"
-# Copied from each input row into its prediction, so the predictions file is self-contained.
-CARRIED_FIELDS = (*VARIANT_FIELDS, "answer", "lang", "group_id")
-# The reranker builds its own prompt, so prompt conditions do not apply to it.
-PROMPT_FIELDS = ("prompt_lang", "prompt_format")
-
-
-def _utc_now() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+from .direct import PROMPT_VERSION
 
 
 def _git_state() -> dict:
@@ -94,30 +83,24 @@ def scoring_units(rows: list[dict], mode: str) -> list[list[dict]]:
     return list(groups.values())
 
 
-def _carried(row: dict, mode: str) -> dict:
-    fields = [field for field in CARRIED_FIELDS if mode != "reranker" or field not in PROMPT_FIELDS]
-    return {field: row[field] for field in fields if field in row}
-
-
 def _score_unit(unit, mode, scorers, model, tokenizer, metadata, max_tokens, serial_scorer) -> list[dict]:
-    """Score one unit; a ValueError marks its rows as failed instead of stopping the run."""
+    """Score one unit and return one result per row; a ValueError marks its rows as failed instead of stopping the run."""
     if mode == "shared":
         try:
-            results, timing = scorers.shared(model, tokenizer, unit, metadata, max_tokens)
+            results, _ = scorers.shared(model, tokenizer, unit, metadata, max_tokens)
         except ValueError as error:
-            return [{**_carried(row, mode), "id": row["id"], "error": str(error)} for row in unit]
-        return [{**_carried(row, mode), **result, "shared_timing": timing} for row, result in zip(unit, results)]
-    records = []
+            return [{"error": str(error)} for _ in unit]
+        return results
+    results = []
     for row in unit:
         try:
             if mode == "serial":
-                result = serial_scorer.score(row)
+                results.append(serial_scorer.score(row))
             else:
-                result = getattr(scorers, mode)(model, tokenizer, row, metadata, max_tokens)
+                results.append(getattr(scorers, mode)(model, tokenizer, row, metadata, max_tokens))
         except ValueError as error:
-            result = {"id": row["id"], "error": str(error)}
-        records.append({**_carried(row, mode), **result})
-    return records
+            results.append({"error": str(error)})
+    return results
 
 
 def _warm_up(units, mode, scorers, model, tokenizer, metadata, max_tokens, repeats: int) -> None:
@@ -127,24 +110,72 @@ def _warm_up(units, mode, scorers, model, tokenizer, metadata, max_tokens, repea
         _score_unit(units[0], mode, scorers, model, tokenizer, metadata, max_tokens, serial_scorer)
 
 
+def model_id(args: argparse.Namespace) -> str:
+    """The model ID of the thesis registry: --model-id, else the name of the model folder (or Hugging Face repo)."""
+    return args.model_id or Path(args.model).name
+
+
+def run_files(output_dir: Path, name: str) -> tuple[Path, Path]:
+    return output_dir / f"{name}.predictions.jsonl", output_dir / f"{name}.manifest.json"
+
+
+def _sorted_orders(orders: set[str]) -> list[str]:
+    return sorted(orders, key=lambda label: (label[:3], int(label[3:])))  # dir2 before dir10
+
+
+def new_manifest(rows: list[dict], args: argparse.Namespace, input_path: Path, name: str,
+                 started: datetime.datetime) -> dict:
+    """The 24 fields of the thesis manifest (STANDARD-DATI.md), then the few that only cs1-bench needs."""
+    environment, code = _environment(), _git_state()
+    return {
+        "run_id": name,
+        "status": "running",
+        "manifest_origin": "written_by_program",
+        "model_id": model_id(args),
+        "wrapper_id": "cs1-bench",
+        "prompt_id": PROMPT_VERSION,
+        "python_version": environment["python"],
+        "model_revision": args.revision,
+        "dtype": args.dtype,
+        "code_commit": code["git_commit"],
+        "inputs": [{"dataset_id": input_path.stem, "sha256": hashlib.sha256(input_path.read_bytes()).hexdigest(),
+                    "rows": len(rows)}],
+        "prompt_langs": sorted({prompt_condition(row)["prompt_lang"] for row in rows}),
+        "prompt_formats": sorted({prompt_condition(row)["prompt_format"] for row in rows}),
+        "orders": _sorted_orders({output.order_label(row.get("rotation")) for row in rows}),
+        "rows_written": 0,
+        "rows_failed": 0,
+        "started_utc": started.isoformat(timespec="seconds"),
+        "probabilities_kind": "softmax_option_logits",
+        "confidence_kind": None,
+        "seconds_kind": "local_inference",
+        "temperature": None,
+        "torch_version": environment.get("torch"),
+        "transformers_version": environment["packages"]["transformers"],
+        "gpu": environment.get("gpu"),
+        # cs1-bench only: needed to trust, reproduce, or summarise the run.
+        "code_dirty": code["git_dirty"],  # Uncommitted changes: the commit alone does not describe the code.
+        "backend": args.backend,
+        "mode": args.mode,
+        "device": None,
+        "model_class": None,
+        "system_role": None,  # native, or merge when the chat template has no system turn
+        "load_seconds": None,
+        "scoring_seconds": None,
+        "wall_seconds": None,
+        "error": None,
+    }
+
+
 def run(rows: list[dict], output_dir: Path, args: argparse.Namespace, input_path: Path) -> dict:
     """Score every row with one model; always leave a manifest describing what happened."""
-    output_dir.mkdir(parents=True, exist_ok=False)
-    manifest = {
-        "schema": MANIFEST_SCHEMA,
-        "status": "running",
-        "cs1_bench_version": __version__,
-        "code": _git_state(),
-        "command": sys.argv,
-        "mode": args.mode,
-        "backend": args.backend,
-        "model": {"source": args.model, "revision": args.revision, "revision_source": args.revision_source},
-        "input": {"path": str(input_path), "sha256": hashlib.sha256(input_path.read_bytes()).hexdigest(),
-                  "rows": len(rows)},
-        "warmup_repeats": args.warmup,
-        "environment": _environment(),
-        "started_utc": _utc_now(),
-    }
+    started_at = datetime.datetime.now(datetime.timezone.utc)
+    name = args.run_id or output.run_id(model_id(args), input_path.stem, started_at)
+    predictions_path, manifest_path = run_files(output_dir, name)
+    if predictions_path.exists() or manifest_path.exists():
+        raise FileExistsError(f"Run {name} already has files in {output_dir}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest = new_manifest(rows, args, input_path, name, started_at)
     started = time.perf_counter()
     progress = ui.Progress(len(rows), args.progress_every)
     try:
@@ -153,19 +184,14 @@ def run(rows: list[dict], output_dir: Path, args: argparse.Namespace, input_path
             files = ", ".join(sorted(path.name for path in Path(args.model).glob("*.py"))) or "no local .py files"
             progress.say(f"remote code allowed: running {files}", ui.WARN)
         model, tokenizer, metadata, scorers = load_backend(args)
-        manifest["model"] = {**metadata, "revision_source": args.revision_source}
-        manifest["load_seconds"] = time.perf_counter() - started
+        manifest.update(dtype=metadata.get("dtype", args.dtype), device=metadata.get("device"),
+                        model_class=metadata.get("model_class"), load_seconds=time.perf_counter() - started)
         progress.say(ui.loaded(manifest), ui.OK)
-        if args.mode != "reranker":
-            rows, supported, fallbacks = resolve_system_roles(rows, tokenizer)
-            manifest["system_role_supported"], manifest["system_role_fallbacks"] = supported, fallbacks
-            if not supported:
-                progress.say(f"no system role in the chat template: system prompt goes in the user turn "
-                             f"({fallbacks} rows)", ui.WARN)
-        manifest["conditions"] = {
-            field: dict(collections.Counter(str(row.get(field, prompt_condition(row).get(field))) for row in rows))
-            for field in ("prompt_lang", "prompt_format", "system_role", "rotation")
-        }
+        rows, supported, fallbacks = resolve_system_roles(rows, tokenizer)
+        manifest["system_role"] = "native" if supported else "merge"
+        if not supported:
+            progress.say(f"no system role in the chat template: system prompt goes in the user turn "
+                         f"({fallbacks} rows)", ui.WARN)
         units = scoring_units(rows, args.mode)
         if args.warmup:
             progress.say(f"warm-up ({args.warmup}x, untimed)")
@@ -175,17 +201,18 @@ def run(rows: list[dict], output_dir: Path, args: argparse.Namespace, input_path
         progress.say(f"scoring {ui.plural(len(rows), 'row')}{groups}")
         scoring_started = time.perf_counter()
         progress.start()
-        with (output_dir / "predictions.jsonl").open("x", encoding="utf-8") as destination:
+        with predictions_path.open("x", encoding="utf-8") as destination:
             for unit in units:
-                records = _score_unit(unit, args.mode, scorers, model, tokenizer, metadata,
+                results = _score_unit(unit, args.mode, scorers, model, tokenizer, metadata,
                                       args.max_tokens, serial_scorer)
+                records = [output.common_row(name, row, result) for row, result in zip(unit, results)]
                 for record in records:
                     destination.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n")
                 destination.flush()
                 progress.advance(records)
         manifest["scoring_seconds"] = time.perf_counter() - scoring_started
-        manifest["rows_scored"], manifest["rows_failed"] = progress.done - progress.failed, progress.failed
-        manifest["status"] = "completed"
+        manifest["rows_written"], manifest["rows_failed"] = progress.done, progress.failed
+        manifest["status"] = "partial" if progress.failed else "completed"
         progress.close()
         status = ui.WARN if progress.failed else ui.OK
         progress.say(ui.scored(manifest), status)
@@ -194,12 +221,11 @@ def run(rows: list[dict], output_dir: Path, args: argparse.Namespace, input_path
         manifest["status"] = "failed"
         manifest["error"] = f"{type(error).__name__}: {error}"
         progress.close()
-        progress.say(f"FAILED: {manifest['error']} (manifest written to {output_dir})", ui.FAIL)
+        progress.say(f"FAILED: {manifest['error']} (manifest written to {manifest_path})", ui.FAIL)
         raise
     finally:
-        manifest["finished_utc"] = _utc_now()
         manifest["wall_seconds"] = time.perf_counter() - started
-        with (output_dir / "manifest.json").open("x", encoding="utf-8") as destination:
+        with manifest_path.open("x", encoding="utf-8") as destination:
             destination.write(json.dumps(manifest, ensure_ascii=False, indent=2, default=str) + "\n")
     return manifest
 
@@ -207,23 +233,34 @@ def run(rows: list[dict], output_dir: Path, args: argparse.Namespace, input_path
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path, help="Decisions or variants JSONL (from cs1 import or cs1 variants)")
-    parser.add_argument("--output", type=Path, required=True, help="New directory for predictions and manifest")
+    parser.add_argument("--output", type=Path, required=True,
+                        help="Folder for the run files <run_id>.predictions.jsonl and <run_id>.manifest.json "
+                             "(created if missing; existing files are never overwritten)")
+    parser.add_argument("--model-id", help="Model ID for the run ID and manifest (default: the model folder name)")
+    parser.add_argument("--run-id", help=argparse.SUPPRESS)  # Set by the parent when it follows the run in a child.
     parser.add_argument("--warmup", type=int, default=1, help="Untimed repeats of the first unit (default: 1)")
     parser.add_argument("--progress-every", type=float, default=10.0, metavar="SECONDS",
                         help="Seconds between progress lines on stderr; 0 prints only start and end (default: 10)")
     add_model_arguments(parser)
     args = parser.parse_args()
-    if args.output.exists():
-        parser.error("Output directory must be new")
     if args.warmup < 0 or args.progress_every < 0:
         parser.error("--warmup and --progress-every must be nonnegative")
     check_model_arguments(parser, args)
+    if args.run_id is None:
+        try:
+            args.run_id = output.run_id(model_id(args), args.input.stem,
+                                        datetime.datetime.now(datetime.timezone.utc))
+        except ValueError as error:
+            parser.error(str(error))
+    if any(path.exists() for path in run_files(args.output, args.run_id)):
+        parser.error(f"Run {args.run_id} already has files in {args.output}")
     rows = [json.loads(line) for line in args.input.read_text(encoding="utf-8").splitlines() if line.strip()]
     if not rows:
         parser.error("Input is empty")
     for row in rows:
         try:
             validate_row(row)
+            output.order_label(row.get("rotation"))
         except ValueError as error:
             parser.error(f"row {row.get('id')!r}: {error}")
     if len({row["id"] for row in rows}) != len(rows):
@@ -234,8 +271,9 @@ def main() -> None:
                  f"({args.backend}, {args.mode}, {ui.plural(len(rows), 'row')})")
         if ui.is_terminal(sys.stderr):
             # The same run in a child process, so transformers' own output is tidied like everything else.
-            code = ui.follow([sys.executable, "-m", "cs1_bench", "run", *sys.argv[1:]], sys.stderr)
-            ui.report_run(args.output)
+            child = [*sys.argv[1:]] if "--run-id" in sys.argv else [*sys.argv[1:], "--run-id", args.run_id]
+            code = ui.follow([sys.executable, "-m", "cs1_bench", "run", *child], sys.stderr)
+            ui.report_run(args.output, args.run_id)
             raise SystemExit(code)
     run(rows, args.output, args, args.input)
 

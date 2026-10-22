@@ -69,34 +69,33 @@ def duration(seconds: float) -> str:
 
 # Summary lines, built from a run manifest so that cs1 run and cs1 check report the same way.
 def loaded(manifest: dict) -> str:
-    model, backend = manifest["model"], manifest["backend"]
-    return (f"loaded {model.get('model_class') or backend} in {duration(manifest['load_seconds'])} "
-            f"on {model.get('device', backend)}")
+    backend = manifest["backend"]
+    return (f"loaded {manifest.get('model_class') or backend} in {duration(manifest['load_seconds'])} "
+            f"on {manifest.get('device') or backend}")
 
 
 def scored(manifest: dict) -> str:
-    rows, seconds = manifest["rows_scored"] + manifest["rows_failed"], manifest["scoring_seconds"]
+    rows, seconds = manifest["rows_written"], manifest["scoring_seconds"]
     rate = rows / seconds if seconds else 0.0
-    supported = manifest.get("system_role_supported")  # Absent for the reranker, which has its own prompt.
-    role = "" if supported is None else f", system role {'native' if supported else 'merge'}"
+    role = f", system role {manifest['system_role']}" if manifest.get("system_role") else ""
     return (f"scored {plural(rows, 'row')} in {duration(seconds)} ({rate:.1f} rows/s), "
             f"{errors(manifest['rows_failed'])}{role}")
 
 
 def finished(seconds: float, output_dir, failed: int) -> str:
-    hint = " (failed rows have an 'error' field in predictions.jsonl)" if failed else ""
+    hint = " (failed rows have an 'error' field)" if failed else ""
     return f"done in {clock(seconds)}, {output_dir}{hint}"
 
 
-def report_run(output_dir, stream=None) -> None:
+def report_run(output_dir, run_id: str, stream=None) -> None:
     """Summarise a run written by a child process; its warnings and errors are already on screen."""
     stream = sys.stderr if stream is None else stream
-    manifest_path = Path(output_dir) / "manifest.json"
+    manifest_path = Path(output_dir) / f"{run_id}.manifest.json"
     if not manifest_path.is_file():
         print(line(FAIL, "run did not start: see the messages above", stream), file=stream)
         return
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest["status"] != "completed":
+    if manifest["status"] == "failed":
         return  # The child already printed its ✗ FAILED line.
     failed = manifest["rows_failed"]
     status = WARN if failed else OK

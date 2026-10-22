@@ -8,11 +8,10 @@ from types import SimpleNamespace
 
 from .core import load_causal_model, resolve_model_source, resolve_revision
 from .direct import score as direct_score
-from .reranker import score as reranker_score
 from .serial import SerialPrefixScorer
 from .shared import score_shared
 
-MODES = ("direct", "serial", "shared", "reranker")
+MODES = ("direct", "serial", "shared")
 
 
 def add_model_arguments(parser: argparse.ArgumentParser) -> None:
@@ -55,15 +54,8 @@ def check_model_arguments(parser: argparse.ArgumentParser, args: argparse.Namesp
     if args.backend == "llamacpp":
         if args.allow_remote_code:
             parser.error("--allow-remote-code applies to --backend torch only")
-        if args.mode == "reranker":
-            parser.error("llama.cpp supports direct, serial, and shared modes; reranker requires torch")
         if args.gguf is None or not args.gguf.is_file():
             parser.error("--backend llamacpp requires --gguf pointing at an existing GGUF file")
-    elif args.mode == "reranker":
-        if args.device in {"mps", "cpu"}:
-            parser.error(f"Reranker mode requires CUDA; --device {args.device} is unsupported")
-        # Keep auto CUDA-only and let the loader enforce one visible GPU.
-        args.device = "cuda"
 
 
 def load_backend(args: argparse.Namespace):
@@ -75,11 +67,11 @@ def load_backend(args: argparse.Namespace):
             args.model, args.revision, args.gguf,
             threads=args.llama_threads, context_tokens=args.max_tokens)
         scorers = SimpleNamespace(direct=llamacpp_backend.score, serial=llamacpp_backend.SerialPrefixScorer,
-                                  shared=llamacpp_backend.score_shared, reranker=None)
+                                  shared=llamacpp_backend.score_shared)
     else:
         model, tokenizer, metadata = load_causal_model(args.model, args.revision, args.device, args.dtype,
                                                        trust_remote_code=args.allow_remote_code)
         scorers = SimpleNamespace(direct=direct_score, serial=SerialPrefixScorer,
-                                  shared=score_shared, reranker=reranker_score)
+                                  shared=score_shared)
     return model, tokenizer, metadata, scorers
 
