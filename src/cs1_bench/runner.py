@@ -274,8 +274,11 @@ def main() -> None:
             child = [*sys.argv[1:]] if "--run-id" in sys.argv else [*sys.argv[1:], "--run-id", args.run_id]
             code = ui.follow([sys.executable, "-m", "cs1_bench", "run", *child], sys.stderr)
             ui.report_run(args.output, args.run_id)
+            ui.report_completion(args.output, args.run_id)
             raise SystemExit(code)
     run(rows, args.output, args, args.input)
+    if not os.environ.get(ui.NESTED):
+        ui.report_completion(args.output, args.run_id)
 
 
 if __name__ == "__main__":

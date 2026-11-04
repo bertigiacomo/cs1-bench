@@ -104,9 +104,21 @@ def report_run(output_dir, run_id: str, stream=None) -> None:
     print(line(status, finished(manifest["wall_seconds"], output_dir, failed), stream), file=stream, flush=True)
 
 
+def report_completion(output_dir, run_id: str, stream=None) -> None:
+    """Print completion box with exact paths of predictions and manifest."""
+    stream = sys.stderr if stream is None else stream
+    out_dir = Path(output_dir).resolve()
+    pred_path = out_dir / f"{run_id}.predictions.jsonl"
+    manifest_path = out_dir / f"{run_id}.manifest.json"
+    print(f"\n[OK] Run completata con successo:", file=stream)
+    print(f"     Predizioni: {pred_path}", file=stream)
+    print(f"     Manifest:   {manifest_path}", file=stream, flush=True)
+
+
 def is_progress(text: str) -> bool:
     """Progress lines (our ·, ▸, ✓ and tqdm bars) are worth seeing only while running; warnings and errors stay."""
-    return not text.strip() or text.startswith((f"  {INFO} ", f"  {STEP} ", f"  {OK} ")) or "%|" in text
+    return (not text.strip() or text.startswith((f"  {INFO} ", f"  {STEP} ", f"  {OK} "))
+            or "%|" in text or " | Accuratezza: " in text)
 
 
 class StatusLine:
@@ -161,6 +173,8 @@ class Progress:
         self.stream = sys.stderr if stream is None else stream
         self.started = self.last = clock()
         self.done = self.failed = 0
+        self.correct = 0
+        self.total_latency = 0.0
         self.bar = None
 
     def say(self, message: str, status: str = INFO) -> None:
@@ -171,23 +185,50 @@ class Progress:
             print(text, file=self.stream, flush=True)
 
     def start(self) -> None:
-        """Start timing; draw tqdm's bar (tqdm ships with transformers) on terminals and in nested runs."""
+        """Start timing; draw progress bar on terminals and in nested runs."""
         self.started = self.last = self.clock()
         if is_terminal(self.stream) or os.environ.get(NESTED):
             from tqdm import tqdm
 
-            step = paint(STEP, COLORS[STEP], self.stream)
-            # ascii=False: block characters, like the marks (UTF-8 terminal assumed).
-            self.bar = tqdm(total=self.total, file=self.stream, unit=" rows", dynamic_ncols=True, leave=False,
-                            ascii=False, bar_format=f"  {step} {{n_fmt}}/{{total_fmt}} {{bar:24}} "
-                                                    "{percentage:3.0f}%, {rate_fmt}, ETA {remaining}{desc}")
-            self.bar.set_description_str(", 0 errors")
+            self.bar = tqdm(total=self.total, file=self.stream, leave=False, bar_format="{desc}")
+            init_desc = (
+                f"[0/{self.total}]   0.0% | Accuratezza:   0.0% (0/0) | "
+                f"Latenza media: 0.0ms | Errori: 0"
+            )
+            self.bar.set_description_str(init_desc, refresh=False)
 
     def advance(self, records: list[dict]) -> None:
-        self.done += len(records)
-        self.failed += sum("error" in record for record in records)
+        for record in records:
+            self.done += 1
+            if "error" in record:
+                self.failed += 1
+            else:
+                pred = record.get("prediction")
+                ans = record.get("answer")
+                if pred is not None and pred == ans:
+                    self.correct += 1
+                if "seconds" in record and record["seconds"] is not None:
+                    self.total_latency += float(record["seconds"])
+                elif "forward_seconds" in record and record["forward_seconds"] is not None:
+                    self.total_latency += float(record["forward_seconds"])
+
+        evaluated = self.done - self.failed
+        acc = (self.correct / evaluated * 100.0) if evaluated > 0 else 0.0
+        pct = (self.done / self.total * 100.0) if self.total > 0 else 0.0
+        if self.total_latency > 0 and evaluated > 0:
+            avg_ms = (self.total_latency / evaluated) * 1000.0
+        else:
+            elapsed = max(self.clock() - self.started, 1e-9)
+            avg_ms = (elapsed / evaluated * 1000.0) if evaluated > 0 else 0.0
+
+        desc = (
+            f"[{self.done}/{self.total}] {pct:5.1f}% | "
+            f"Accuratezza: {acc:5.1f}% ({self.correct}/{evaluated}) | "
+            f"Latenza media: {avg_ms:0.1f}ms | Errori: {self.failed}"
+        )
+
         if self.bar is not None:
-            self.bar.set_description_str(f", {errors(self.failed)}", refresh=False)
+            self.bar.set_description_str(desc, refresh=False)
             self.bar.update(len(records))
             return
         now = self.clock()
