@@ -96,7 +96,8 @@ def test_run_writes_common_rows_and_the_standard_manifest(tmp_path, backend):
     assert first["probabilities"] == {"account": 0.75, "billing": 0.25} and first["prediction"] == "account"
     assert second["option_ids"] == ["billing", "account"] and second["prediction"] == "billing"  # As seen.
     assert first["option_logits"] == {"account": 2.0, "billing": 0.9} and first["confidence"] is None
-    assert list(manifest)[:24] == STANDARD_FIELDS
+    assert list(manifest)[:24] == STANDARD_FIELDS and list(manifest)[24] == "finished_utc"
+    assert manifest["finished_utc"] >= manifest["started_utc"]
     assert manifest["status"] == "completed" and manifest["prompt_id"] == "cs1bench-v1"
     assert (manifest["rows_written"], manifest["rows_failed"]) == (4, 0)
     assert manifest["inputs"] == [{"dataset_id": "variants", "rows": 4,
@@ -133,10 +134,11 @@ def test_models_without_system_role_fall_back_to_merge_and_say_so(tmp_path, back
     assert manifest["system_role"] == "merge"
 
 
-def test_a_failing_row_is_recorded_and_the_run_continues(tmp_path, backend):
+def test_a_failing_row_is_recorded_and_the_run_continues(tmp_path, backend, capsys):
     rows = [dict(DECISION, id="bad", fail=True), dict(DECISION, id="good")]
     runner.run(rows, tmp_path / "out", make_args(), write_rows(tmp_path, rows))
     predictions, manifest = read_output(tmp_path / "out")
+    assert "row bad: " in capsys.readouterr().err  # The message is on screen too, so it ends up in the log.
     assert "not one exact round-trip token" in predictions[0]["error"]
     assert (predictions[0]["answer"], predictions[0]["prediction"], predictions[0]["probabilities"]) == (
         "account", None, None)
@@ -170,7 +172,7 @@ def test_failed_load_still_leaves_a_manifest(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         runner.run(rows, tmp_path / "out", make_args(), write_rows(tmp_path, rows))
     manifest = json.loads((tmp_path / "out" / "fake_variants_20261022-2000.manifest.json").read_text())
-    assert manifest["status"] == "failed"
+    assert manifest["status"] == "failed" and manifest["finished_utc"]
     assert "Checkpoint did not load completely" in manifest["error"]
 
 

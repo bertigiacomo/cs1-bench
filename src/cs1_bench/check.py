@@ -13,6 +13,7 @@ from pathlib import Path
 from . import ui
 from .core import (LETTERS, TEXT_EXTRACTED_MODEL_TYPES, auto_model_class, prompt_condition, resolve_model_source,
                    resolve_revision, supports_system_role, validate_row)
+from .data import complete_with_sets
 from .direct import _slot_ids, encode_prompt
 from .runner import _environment, _git_state, resolve_system_roles
 from .ui import FAIL, OK, SKIP, WARN
@@ -221,6 +222,8 @@ def main() -> None:
     parser.add_argument("--input", type=Path,
                         help=f"Your variants JSONL: all prompts are test-encoded, the first {LIVE_ROWS} rows scored "
                              "(default: the built-in 4-row smoke test)")
+    parser.add_argument("--sets", type=Path,
+                        help="Sets file (JSON) with the question and options of each set, as in cs1 run")
     parser.add_argument("--no-load", action="store_true", help="Skip the live test: no weights are loaded")
     parser.add_argument("--device", choices=("auto", "cuda", "mps", "cpu"), default="auto",
                         help="Device for the live test (default: auto)")
@@ -241,6 +244,10 @@ def main() -> None:
     if missing:
         parser.error(f"Not local model folders: {', '.join(missing)}")
     rows = read_rows(args.input if args.input is not None else SMOKE)
+    try:
+        rows, _ = complete_with_sets(rows, args.sets)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
     for row in rows:
         try:
             validate_row(row)

@@ -47,3 +47,11 @@ def test_scorer_options_must_match_the_order_shown():
     with pytest.raises(ValueError):
         output.common_row("r", ROW, {"option_ids": ["energy", "gas"], "probabilities": [0.9, 0.1],
                                      "option_logits": [1.0, 0.0]})
+
+
+def test_multi_turn_rows_carry_turn_id_context_level_and_char_len():
+    turn = {**ROW, "state": "ciao è", "turn_id": "rm131-t2", "context_level": "cfull"}
+    record = output.common_row("r", turn, {"error": "too long"})  # Failed rows keep them too.
+    assert (record["turn_id"], record["context_level"], record["char_len"]) == ("rm131-t2", "cfull", 6)
+    plain = output.common_row("r", {**ROW, "state": "s"}, {"error": "too long"})
+    assert not {"turn_id", "context_level", "char_len"} & plain.keys()  # Single-turn rows are unchanged.

@@ -104,3 +104,28 @@ def test_cli_reports_record_errors(tmp_path, monkeypatch, capsys):
         data.main()
     assert error.value.code == 2
     assert "in.csv record 1: options must contain 2-16 entries" in capsys.readouterr().err
+
+
+SETS = {"route": {"question": "Which route?", "options": [{"id": "chat", "description": "Chat"},
+                                                          {"id": "report", "description": "Report"}]}}
+
+
+def test_sets_file_gives_each_row_the_question_and_options_of_its_set(tmp_path):
+    sets = write(tmp_path, "my-sets.json", json.dumps(SETS))
+    rows, entry = data.complete_with_sets([{"id": "r1", "set": "route", "state": "s", "answer": "chat"}], sets)
+    assert rows[0]["question"] == "Which route?" and rows[0]["options"] == SETS["route"]["options"]
+    data.validate_decision(rows[0])
+    assert entry["dataset_id"] == "my-sets" and len(entry["sha256"]) == 64 and entry["rows"] == 1
+
+
+def test_without_a_sets_file_complete_rows_are_left_alone():
+    rows = [{"id": "r1", "state": "s", "question": "q", "options": SETS["route"]["options"]}]
+    assert data.complete_with_sets(rows, None) == (rows, None)
+
+
+def test_rows_that_need_a_sets_file_say_so_and_unknown_sets_are_refused(tmp_path):
+    with pytest.raises(ValueError, match="pass --sets"):
+        data.complete_with_sets([{"id": "r1", "set": "route", "state": "s"}], None)
+    sets = write(tmp_path, "sets.json", json.dumps(SETS))
+    with pytest.raises(ValueError, match="'task'"):
+        data.complete_with_sets([{"id": "r1", "set": "task", "state": "s"}], sets)

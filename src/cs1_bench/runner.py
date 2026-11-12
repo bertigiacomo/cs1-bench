@@ -17,6 +17,7 @@ from pathlib import Path
 from . import output, ui
 from .cli import add_model_arguments, check_model_arguments, load_backend
 from .core import prompt_condition, supports_system_role, validate_row
+from .data import complete_with_sets
 from .direct import PROMPT_VERSION
 
 
@@ -139,7 +140,8 @@ def new_manifest(rows: list[dict], args: argparse.Namespace, input_path: Path, n
         "dtype": args.dtype,
         "code_commit": code["git_commit"],
         "inputs": [{"dataset_id": input_path.stem, "sha256": hashlib.sha256(input_path.read_bytes()).hexdigest(),
-                    "rows": len(rows)}],
+                    "rows": len(rows)},
+                   *([args.sets_input] if getattr(args, "sets_input", None) else [])],
         "prompt_langs": sorted({prompt_condition(row)["prompt_lang"] for row in rows}),
         "prompt_formats": sorted({prompt_condition(row)["prompt_format"] for row in rows}),
         "orders": _sorted_orders({output.order_label(row.get("rotation")) for row in rows}),
@@ -153,6 +155,7 @@ def new_manifest(rows: list[dict], args: argparse.Namespace, input_path: Path, n
         "torch_version": environment.get("torch"),
         "transformers_version": environment["packages"]["transformers"],
         "gpu": environment.get("gpu"),
+        "finished_utc": None,  # 25th field of the thesis manifest: set when the manifest is written, even on a crash.
         # cs1-bench only: needed to trust, reproduce, or summarise the run.
         "code_dirty": code["git_dirty"],  # Uncommitted changes: the commit alone does not describe the code.
         "backend": args.backend,
@@ -209,6 +212,9 @@ def run(rows: list[dict], output_dir: Path, args: argparse.Namespace, input_path
                 for record in records:
                     destination.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n")
                 destination.flush()
+                for row, record in zip(unit, records):
+                    if "error" in record:  # The message itself, so it is also in the log of the run.
+                        progress.say(f"row {row['id']}: {record['error']}", ui.FAIL)
                 progress.advance(records)
         manifest["scoring_seconds"] = time.perf_counter() - scoring_started
         manifest["rows_written"], manifest["rows_failed"] = progress.done, progress.failed
@@ -225,6 +231,7 @@ def run(rows: list[dict], output_dir: Path, args: argparse.Namespace, input_path
         raise
     finally:
         manifest["wall_seconds"] = time.perf_counter() - started
+        manifest["finished_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
         with manifest_path.open("x", encoding="utf-8") as destination:
             destination.write(json.dumps(manifest, ensure_ascii=False, indent=2, default=str) + "\n")
     return manifest
@@ -236,6 +243,9 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True,
                         help="Folder for the run files <run_id>.predictions.jsonl and <run_id>.manifest.json "
                              "(created if missing; existing files are never overwritten)")
+    parser.add_argument("--sets", type=Path,
+                        help="Sets file (JSON) with the question and options of each set, for rows that carry "
+                             "only a 'set' field")
     parser.add_argument("--model-id", help="Model ID for the run ID and manifest (default: the model folder name)")
     parser.add_argument("--run-id", help=argparse.SUPPRESS)  # Set by the parent when it follows the run in a child.
     parser.add_argument("--warmup", type=int, default=1, help="Untimed repeats of the first unit (default: 1)")
@@ -257,6 +267,10 @@ def main() -> None:
     rows = [json.loads(line) for line in args.input.read_text(encoding="utf-8").splitlines() if line.strip()]
     if not rows:
         parser.error("Input is empty")
+    try:
+        rows, args.sets_input = complete_with_sets(rows, args.sets)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
     for row in rows:
         try:
             validate_row(row)

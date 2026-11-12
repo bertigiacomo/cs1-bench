@@ -25,6 +25,32 @@ def validate_decision(row: dict) -> None:
         raise ValueError("lang must be a nonempty string")
 
 
+def complete_with_sets(rows: list[dict], sets_path: Path | None) -> tuple[list[dict], dict | None]:
+    """Give each row the question and options of its set, kept once per set in a sets file.
+
+    The sets file is a JSON object {set name: {"question": ..., "options": [...]}}; the row's 'set' field
+    picks the entry. Without a sets file the rows come back unchanged. Also returns the manifest entry
+    of the sets file (None without one), because question and options change the scores.
+    """
+    if sets_path is None:
+        if any("set" in row and not {"question", "options"} <= row.keys() for row in rows):
+            raise ValueError("Rows have a set but no question and options: pass --sets with the sets file")
+        return rows, None
+    data = Path(sets_path).read_bytes()
+    sets = json.loads(data.decode("utf-8"))
+    if not isinstance(sets, dict):
+        raise ValueError(f"{Path(sets_path).name} must be a JSON object with one entry per set")
+    completed = []
+    for row in rows:
+        entry = sets.get(row.get("set"))
+        if not isinstance(entry, dict) or not {"question", "options"} <= entry.keys():
+            raise ValueError(f"row {row.get('id')!r}: set {row.get('set')!r} has no question and options "
+                             f"in {Path(sets_path).name}")
+        completed.append({**row, "question": entry["question"], "options": entry["options"]})
+    return completed, {"dataset_id": Path(sets_path).stem, "sha256": hashlib.sha256(data).hexdigest(),
+                       "rows": len(sets)}
+
+
 def read_records(path: Path, fmt: str | None = None, delimiter: str | None = None) -> list[dict]:
     """Read raw records; CSV delimiter is sniffed among comma, semicolon, and tab."""
     fmt = fmt or path.suffix.lstrip(".").lower()

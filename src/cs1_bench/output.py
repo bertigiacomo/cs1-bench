@@ -8,11 +8,14 @@ The common format is the same for every model and wrapper of the thesis (STANDAR
 from __future__ import annotations
 
 import datetime
+import json
 
 from .core import prompt_condition
 
 COLUMNS = ("run_id", "decision_id", "set", "prompt_lang", "prompt_format", "order",
            "option_ids", "answer", "prediction", "probabilities", "confidence", "seconds")
+# Multi-turn datasets only (rows with a turn_id): copied from the input row so runs can be compared per turn.
+TURN_FIELDS = ("turn_id", "context_level")
 # Copied as they are from a scorer result when present (serial and shared modes fill fewer of them).
 OPTIONAL = ("allowed_token_mass", "full_vocab_argmax_id", "forward_seconds", "prompt_sha256", "input_tokens")
 
@@ -62,6 +65,10 @@ def common_row(run: str, row: dict, result: dict) -> dict:
     record.update(run_id=run, decision_id=decision_id, set=decision_set(row, decision_id),
                   prompt_lang=condition["prompt_lang"], prompt_format=condition["prompt_format"],
                   order=order_label(row.get("rotation")), option_ids=option_ids, answer=row.get("answer"))
+    if "turn_id" in row:
+        record.update({field: row.get(field) for field in TURN_FIELDS})
+        state = row["state"]  # char_len: characters of the state, the context the model was given.
+        record["char_len"] = len(state if isinstance(state, str) else json.dumps(state, ensure_ascii=False))
     if "error" in result:
         record["error"] = result["error"]
         return record
